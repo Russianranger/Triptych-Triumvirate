@@ -126,6 +126,312 @@ sudo apt install build-essential cmake ninja-build git \
      zlib1g-dev uuid-dev libssl-dev
 ```
 
+# Triune / NMS Post-Install Fixes
+
+This document contains post-install fixes and modifications required for the Triune / NMS server.
+
+---
+
+## 1. Disable Discord Webhook Integration
+
+The NMS server includes Discord webhook functionality in UCS. If no valid Discord webhook is configured, UCS may repeatedly produce errors such as:
+
+    UCS | Error | SendWebhookMessage [Discord Client] Code [404]
+    Error [{"message": "Unknown Webhook", "code": 10015}]
+
+If Discord integration is not desired, it can be disabled in the NMS source.
+
+> NOTE: Do not globally remove references to "Discord." EverQuest contains legitimate content using the name, including Priest of Discord, Gates of Discord, Discordant Energy, etc. The changes below specifically target the DiscordManager webhook integration.
+
+### File 1: Release-NMS-Server/ucs/worldserver.cpp
+
+Around line 94, locate:
+
+    DiscordManager::Instance()->QueuePlayerEventMessage(n);
+
+Comment it out:
+
+    // DiscordManager::Instance()->QueuePlayerEventMessage(n);
+
+Around line 101, locate:
+
+    DiscordManager::Instance()->QueueWebhookMessage(
+        q->webhook_id,
+        q->message
+    );
+
+Comment out the entire call:
+
+    // DiscordManager::Instance()->QueueWebhookMessage(
+    //     q->webhook_id,
+    //     q->message
+    // );
+
+This prevents UCS from adding player events and explicit webhook messages to the Discord message queue.
+
+### File 2: Release-NMS-Server/ucs/ucs.cpp
+
+At line 174, locate:
+
+    std::thread(PlayerEventQueueListener).detach();
+
+Comment it out:
+
+    // std::thread(PlayerEventQueueListener).detach();
+
+The PlayerEventQueueListener function itself begins around line 93 and contains:
+
+    void PlayerEventQueueListener() {
+        while (caught_loop == 0) {
+            DiscordManager::Instance()->ProcessMessageQueue();
+            Sleep(100);
+        }
+    }
+
+The function does not need to be deleted or modified. Commenting out the thread creation at line 174 prevents the Discord message-processing loop from starting.
+
+### Rebuild UCS
+
+After making the changes:
+
+    cd ~/NMS-Release/Release-NMS-Server
+    cmake --build build --target ucs -j2
+
+Restart the Triune server afterward.
+
+---
+
+## 2. Fix Perl DBD::mysql Door/Quest Error
+
+Triune quest scripts use the Perl DBD::mysql module. If it is missing, clicking doors or triggering certain quest events may produce an error similar to:
+
+    quest_global_player Event EVENT_CLICKDOOR
+    install_driver(mysql) failed: Can't locate DBD/mysql.pm
+    Perhaps the DBD::mysql perl module hasn't been fully installed
+    at ./quests/plugins/MySQL.pl line 49
+
+Install the required package:
+
+    apt update
+    apt install -y libdbd-mysql-perl
+
+Optionally verify that Perl can load the module:
+
+    perl -MDBD::mysql -e 'print "DBD::mysql loaded OK\n"'
+
+Expected output:
+
+    DBD::mysql loaded OK
+
+No server source modification is required for this error. Installing `libdbd-mysql-perl` resolves it.
+
+---
+
+## 3. Fix Nektulos Forest NPC Spawning / Pathing
+
+### Problem
+
+In The Nektulos Forest, NPCs may exhibit severely incorrect movement and spawning behavior.
+
+Observed symptoms include:
+
+- NPCs appearing to fall from the sky when the zone loads.
+- NPCs traveling through the air while following their path grids.
+- NPCs moving underneath or through the terrain.
+- NPCs appearing at seemingly incorrect elevations.
+- NPC movement along established paths appearing erratic or "janky."
+- The problem may affect a significant portion of the NPC population while other NPCs appear normal.
+
+The issue appears to result from a mismatch between the Nektulos geometry/navigation files being used by the server and the Nektulos spawn/pathing data contained in the Triune database.
+
+### Existing Nektulos Map Files
+
+The Triune installation contains both current and legacy Nektulos map files.
+
+The active files are located at:
+
+    ~/triune-server/maps/base/nektulos.map
+    ~/triune-server/maps/nav/nektulos.nav
+    ~/triune-server/maps/water/nektulos.wtr
+
+Legacy versions are located at:
+
+    ~/triune-server/maps/legacy/base/nektulos.map
+    ~/triune-server/maps/legacy/nav/nektulos.nav
+    ~/triune-server/maps/legacy/water/nektulos.wtr
+
+The Triune database contains a large amount of Nektulos spawn and path-grid data whose coordinates appear to correspond to the legacy Nektulos geometry.
+
+### Back Up the Existing Nektulos Maps
+
+Before replacing anything, create a backup of the currently active files.
+
+    cd ~/triune-server
+
+    mkdir -p maps/nektulos-backup
+
+    cp -a maps/base/nektulos.map maps/nektulos-backup/
+    cp -a maps/nav/nektulos.nav maps/nektulos-backup/
+    cp -a maps/water/nektulos.wtr maps/nektulos-backup/
+
+Verify that the backup exists:
+
+    ls -lh maps/nektulos-backup/
+
+The directory should contain:
+
+    nektulos.map
+    nektulos.nav
+    nektulos.wtr
+
+### Replace Active Nektulos Maps With Legacy Versions
+
+Copy the legacy Nektulos files over the active versions:
+
+    cd ~/triune-server
+
+    cp -f maps/legacy/base/nektulos.map maps/base/nektulos.map
+    cp -f maps/legacy/nav/nektulos.nav maps/nav/nektulos.nav
+    cp -f maps/legacy/water/nektulos.wtr maps/water/nektulos.wtr
+
+Verify the active files:
+
+    ls -lh \
+    maps/base/nektulos.map \
+    maps/nav/nektulos.nav \
+    maps/water/nektulos.wtr
+
+The legacy files should be approximately:
+
+    nektulos.map    100 KB
+    nektulos.nav    1.2 MB
+    nektulos.wtr     92 KB
+
+For comparison, the previously active files observed during troubleshooting were approximately:
+
+    nektulos.map    2.0 MB
+    nektulos.nav    968 KB
+    nektulos.wtr     92 KB
+
+The large difference in the `.map` file is an important indication that the two sets contain substantially different Nektulos geometry.
+
+### Restart the Server
+
+Perform a complete Triune server restart after replacing the files.
+
+Do not simply leave Nektulos and zone back into it.
+
+The Nektulos zone process needs to be restarted so that the replacement `.map`, `.nav`, and `.wtr` files are loaded from disk.
+
+After restarting, enter Nektulos and check:
+
+1. NPCs should spawn at the appropriate terrain elevation instead of falling from above.
+2. Roaming/pathing NPCs should remain approximately on the ground.
+3. NPCs following path grids should follow the terrain rather than moving through the air or underground.
+4. General NPC movement should appear substantially more natural.
+
+### Database Investigation
+
+During troubleshooting, the Nektulos spawn data was checked with:
+
+    SELECT
+        COUNT(*) AS spawn_count,
+        MIN(z) AS min_z,
+        MAX(z) AS max_z,
+        AVG(z) AS avg_z
+    FROM spawn2
+    WHERE zone = 'nektulos';
+
+The Triune database contained:
+
+    spawn_count: 845
+    min_z:       -160.163696
+    max_z:        172.000000
+    avg_z:         12.501827...
+
+Individual spawn points also showed numerous NPCs intentionally assigned to different elevations and path grids.
+
+Examples included NPCs at elevations above 100 with valid pathgrid assignments as well as large numbers of NPCs at negative elevations.
+
+Because the coordinates appear to be deliberately populated rather than randomly corrupted, manually modifying the `spawn2.z` values is NOT recommended.
+
+The underlying problem should instead be corrected by ensuring that the server is using the Nektulos geometry/navigation data corresponding to those coordinates.
+
+### Restore Original Nektulos Maps
+
+If the legacy files need to be reverted, restore the backup:
+
+    cd ~/triune-server
+
+    cp -f maps/nektulos-backup/nektulos.map maps/base/nektulos.map
+    cp -f maps/nektulos-backup/nektulos.nav maps/nav/nektulos.nav
+    cp -f maps/nektulos-backup/nektulos.wtr maps/water/nektulos.wtr
+
+Perform another complete server restart afterward.
+
+---
+
+## Post-Install Fix Summary
+
+The following fixes have been identified during installation and testing of Triune / NMS:
+
+### Discord / UCS
+
+Problem:
+
+    UCS | Error | SendWebhookMessage [Discord Client] Code [404]
+
+Fix:
+
+- Disable the two DiscordManager queue calls in `ucs/worldserver.cpp`.
+- Disable creation of the `PlayerEventQueueListener` thread in `ucs/ucs.cpp`.
+- Rebuild the UCS target.
+
+### Perl / Quest Scripts
+
+Problem:
+
+    install_driver(mysql) failed: Can't locate DBD/mysql.pm
+
+Fix:
+
+    apt install -y libdbd-mysql-perl
+
+### Nektulos Forest
+
+Problem:
+
+- NPCs falling from the sky.
+- NPCs traveling through the air.
+- NPCs traveling through terrain.
+- Erratic path-grid movement.
+
+Fix:
+
+Replace:
+
+    maps/base/nektulos.map
+    maps/nav/nektulos.nav
+    maps/water/nektulos.wtr
+
+with the corresponding files from:
+
+    maps/legacy/
+
+and completely restart the server.
+
+---
+
+## Important Notes
+
+- Always back up files before replacing or modifying them.
+- The Discord modifications require UCS to be rebuilt.
+- The Perl fix does not require a source-code modification.
+- The Nektulos fix does not require recompiling the server.
+- The Nektulos database spawn coordinates should not be mass-modified to compensate for incorrect map geometry.
+- A complete server/zone restart should be performed after changing map or navigation files.
+
+
 ---
 
 ## Future Plans
