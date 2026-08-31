@@ -91,17 +91,20 @@ void WorldServer::ProcessMessage(uint16 opcode, EQ::Net::Packet &p)
 		cereal::BinaryInputArchive archive(ss);
 		archive(n);
 
-		DiscordManager::Instance()->QueuePlayerEventMessage(n);
+//		discord disabled
+//		DiscordManager::Instance()->QueuePlayerEventMessage(n);
 
 		break;
 	}
+		
 	case ServerOP_DiscordWebhookMessage: {
 		auto *q = (DiscordWebhookMessage_Struct *) p.Data();
 
-		DiscordManager::Instance()->QueueWebhookMessage(
-			q->webhook_id,
-			q->message
-		);
+//		discord disabled
+//		DiscordManager::Instance()->QueueWebhookMessage(
+//			q->webhook_id,
+//			q->message
+//		);
 
 		break;
 	}
