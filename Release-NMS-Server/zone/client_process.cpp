@@ -750,37 +750,37 @@ bool Client::Process() {
 				}
 			}
 
-			if (RuleB(Custom, ServerAuthStats) && InZone() && !CAuthorized) {
-				if (CUnauth_tics > 1) {
-					if (GetZoneID() != Zones::BAZAAR) {
-						if (CUnauth_tics >= 11) {
-							zone->SendDiscordMessage("admin", fmt::format("Moving [{}] to Bazaar. Unauthorized Client.", GetCleanName()));
-							const auto safe = ZoneStore::Instance()->GetZoneSafeCoordinates(Zones::BAZAAR);
-							auto zone_mode = ZoneSolicited;
-
-							MovePC(
-								Zones::BAZAAR,
-								safe.x,
-								safe.y,
-								safe.z,
-								0.0f,
-								0,
-								zone_mode
-							);
-
-							return false;
-						}
-
-						Message(Chat::Shout, "You are not using the latest New Multiclass Server client. Visit https://your-server-website.example/install-help for more information. Moving to the Bazaar in %d seconds.", (11 - CUnauth_tics) * 6);
-					} else {
-						if (CUnauth_tics % 2 == 0) {
-							Message(Chat::Shout, "You are not using the latest New Multiclass Server client. Visit https://your-server-website.example/install-help for more information. You will be disconnected if you leave the Bazaar.");
-						}
-					}
-				}
-				CUnauth_tics++;
-			}
-
+//			if (RuleB(Custom, ServerAuthStats) && InZone() && !CAuthorized) {
+//				if (CUnauth_tics > 1) {
+//					if (GetZoneID() != Zones::BAZAAR) {
+//						if (CUnauth_tics >= 11) {
+//							zone->SendDiscordMessage("admin", fmt::format("Moving [{}] to Bazaar. Unauthorized Client.", GetCleanName()));
+//							const auto safe = ZoneStore::Instance()->GetZoneSafeCoordinates(Zones::BAZAAR);
+//							auto zone_mode = ZoneSolicited;
+//
+//							MovePC(
+//								Zones::BAZAAR,
+//								safe.x,
+//								safe.y,
+//								safe.z,
+//								0.0f,
+//								0,
+//								zone_mode
+//							);
+//
+//							return false;
+//						}
+//
+//						Message(Chat::Shout, "You are not using the latest New Multiclass Server client. Visit https://your-server-website.example/install-help for more information. Moving to the Bazaar in %d seconds.", (11 - CUnauth_tics) * 6);
+//					} else {
+//						if (CUnauth_tics % 2 == 0) {
+//							Message(Chat::Shout, "You are not using the latest New Multiclass Server client. Visit https://your-server-website.example/install-help for more information. You will be disconnected if you leave the Bazaar.");
+//						}
+//					}
+//				}
+//				CUnauth_tics++;
+//			}
+//
 			SendBulkStatsUpdate();
 		}
 
