@@ -170,8 +170,9 @@ int main() {
 	std::signal(SIGTERM, CatchSignal);
 	std::signal(SIGKILL, CatchSignal);
 	std::signal(SIGSEGV, CatchSignal);
-
-	std::thread(PlayerEventQueueListener).detach();
+	
+//disabled
+//	std::thread(PlayerEventQueueListener).detach();
 
 	worldserver = new WorldServer;
 
