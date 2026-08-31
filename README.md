@@ -330,35 +330,6 @@ After restarting, enter Nektulos and check:
 3. NPCs following path grids should follow the terrain rather than moving through the air or underground.
 4. General NPC movement should appear substantially more natural.
 
-### Database Investigation
-
-During troubleshooting, the Nektulos spawn data was checked with:
-
-    SELECT
-        COUNT(*) AS spawn_count,
-        MIN(z) AS min_z,
-        MAX(z) AS max_z,
-        AVG(z) AS avg_z
-    FROM spawn2
-    WHERE zone = 'nektulos';
-
-The Triune database contained:
-
-    spawn_count: 845
-    min_z:       -160.163696
-    max_z:        172.000000
-    avg_z:         12.501827...
-
-Individual spawn points also showed numerous NPCs intentionally assigned to different elevations and path grids.
-
-Examples included NPCs at elevations above 100 with valid pathgrid assignments as well as large numbers of NPCs at negative elevations.
-
-Because the coordinates appear to be deliberately populated rather than randomly corrupted, manually modifying the `spawn2.z` values is NOT recommended.
-
-The underlying problem should instead be corrected by ensuring that the server is using the Nektulos geometry/navigation data corresponding to those coordinates.
-
-### Restore Original Nektulos Maps
-
 If the legacy files need to be reverted, restore the backup:
 
     cd ~/triune-server
