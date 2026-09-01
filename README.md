@@ -73,15 +73,21 @@ credentials, then start `world.exe` (or use the included `start-servers.bat`).
 Prefer to build from source instead? See **Building** below.
 
 **5. Install quests and plugins.** Copy `Release-NMS-Quests/` into your server's `quests/` folder
-and `Release-NMS-Plugins/` into `quests/plugins/`.
+and `Release-NMS-Plugins/` into `quests/plugins/`. If you do not have a quests folder, create one in the root directory of the server. For plugins, that should be created in the quests folder, as noted above.
 
-**6. Client data files.** Fresh `spells_us.txt`, `dbstr_us.txt`, `SkillCaps.txt` and
-`BaseData.txt` are already exported in `Release-NMS-Server/export/` — copy them into your client
+**6. Copy lua_modules folder.** Copy lua_modules folder from 'quests/' directory into your root server folder. Ensure it exists in both your server/ and your server/quests/ folder.
+
+**7. Client data files.** Fresh `spells_us.txt`, `dbstr_us.txt`, `SkillCaps.txt` and
+`BaseData.txt` are already exported in `Release-NMS-Server/export/` — copy them into your client's root directory
 (and its `Resources\` folder). If you change the DB, re-run `export_client_files` to regenerate
-them.
+them. To run the 'export_client_files' command, you will need to create a folder called 'export' in your root server directory (server/export).
 
-**7. Install the client add-on.** Copy `Release-NMS-Client/ClientFiles/` over your client.
+**8. Install the client add-on.** Copy `Release-NMS-Client/ClientFiles/` over your client.
 See [the client README](Release-NMS-Client/README.md) — it also covers the known art gaps.
+
+**9. Configure your eqemu_config.json and login.json files.** Ensure that these files are configured to the correct database and IP address. 
+eqemu_config.json has TWO locations for your database information - ensure both reflect the correct database name and credentials. login.json only has one location for database.
+Ensure both are setup with the correct IP address for connecting to the server. If hosting and connecting locally on the same machine, it will be 127.0.0.1. If on a LAN network, ensure that it is pointing to the computer IP that is hosting the server. Do not change the IP addresses for database/other server information, as it should all be on the same machine.
 
 ---
 
@@ -132,9 +138,9 @@ This document contains post-install fixes and modifications required for the Tri
 
 ---
 
-## 1. Disable Discord Webhook Integration
+## 1. Disable/Enable Discord Webhook Integration
 
-The NMS server includes Discord webhook functionality in UCS. If no valid Discord webhook is configured, UCS may repeatedly produce errors such as:
+By default - this is already disabled. For those that do not want it disabled, just delete the "//" in the specified code lines. The NMS server includes Discord webhook functionality in UCS. If no valid Discord webhook is configured, UCS may repeatedly produce errors such as:
 
     UCS | Error | SendWebhookMessage [Discord Client] Code [404]
     Error [{"message": "Unknown Webhook", "code": 10015}]
@@ -252,13 +258,12 @@ The active files are located at:
 
     ~/triune-server/maps/base/nektulos.map
     ~/triune-server/maps/nav/nektulos.nav
-    ~/triune-server/maps/water/nektulos.wtr
 
 Legacy versions are located at:
 
     ~/triune-server/maps/legacy/base/nektulos.map
     ~/triune-server/maps/legacy/nav/nektulos.nav
-    ~/triune-server/maps/legacy/water/nektulos.wtr
+
 
 The Triune database contains a large amount of Nektulos spawn and path-grid data whose coordinates appear to correspond to the legacy Nektulos geometry.
 
@@ -272,7 +277,6 @@ Before replacing anything, create a backup of the currently active files.
 
     cp -a maps/base/nektulos.map maps/nektulos-backup/
     cp -a maps/nav/nektulos.nav maps/nektulos-backup/
-    cp -a maps/water/nektulos.wtr maps/nektulos-backup/
 
 Verify that the backup exists:
 
@@ -282,7 +286,7 @@ The directory should contain:
 
     nektulos.map
     nektulos.nav
-    nektulos.wtr
+
 
 ### Replace Active Nektulos Maps With Legacy Versions
 
@@ -299,23 +303,23 @@ Verify the active files:
     ls -lh \
     maps/base/nektulos.map \
     maps/nav/nektulos.nav \
-    maps/water/nektulos.wtr
+
 
 The legacy files should be approximately:
 
     nektulos.map    100 KB
     nektulos.nav    1.2 MB
-    nektulos.wtr     92 KB
+
 
 For comparison, the previously active files observed during troubleshooting were approximately:
 
     nektulos.map    2.0 MB
     nektulos.nav    968 KB
-    nektulos.wtr     92 KB
+
 
 The large difference in the `.map` file is an important indication that the two sets contain substantially different Nektulos geometry.
 
-### Restart the Server
+### Restart the Server (If Running)
 
 Perform a complete Triune server restart after replacing the files.
 
@@ -336,7 +340,6 @@ If the legacy files need to be reverted, restore the backup:
 
     cp -f maps/nektulos-backup/nektulos.map maps/base/nektulos.map
     cp -f maps/nektulos-backup/nektulos.nav maps/nav/nektulos.nav
-    cp -f maps/nektulos-backup/nektulos.wtr maps/water/nektulos.wtr
 
 Perform another complete server restart afterward.
 
@@ -383,7 +386,6 @@ Replace:
 
     maps/base/nektulos.map
     maps/nav/nektulos.nav
-    maps/water/nektulos.wtr
 
 with the corresponding files from:
 
