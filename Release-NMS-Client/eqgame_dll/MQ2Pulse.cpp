@@ -23,6 +23,7 @@ GNU General Public License for more details.
 #include "multi_pet.h"
 #include "pet_window.h"
 #include "waypoint_window.h"
+#include "vault_window.h"
 
 extern FloatingTextManager* g_pFtm;
 BOOL TurnNotDone=FALSE;
@@ -383,6 +384,23 @@ void Heartbeat()
             --g_shroudHotbarFixesLeft;
             g_shroudHotbarNextTick = GetTickCount() + 500;
         }
+        // NMS: keep the server's shroud flag applied -- the profile re-init
+        // that runs inside the OP_Shroud handler clears BaseProfile+0x340C.
+        extern int   g_serverShroudStampLeft;
+        extern DWORD g_serverShroudStampNext;
+        extern void  ShroudStampServerState(const char *);
+        if (g_serverShroudStampLeft > 0 && GetTickCount() >= g_serverShroudStampNext) {
+            ShroudStampServerState("pulse");
+            --g_serverShroudStampLeft;
+            g_serverShroudStampNext = GetTickCount() + 500;
+        }
+        // NMS: repopulate the AA window once the shroud AA-table burst is quiet.
+        extern DWORD g_aaRefreshAt;
+        extern void  ShroudRefreshAAWindow(void);
+        if (g_aaRefreshAt && GetTickCount() >= g_aaRefreshAt) {
+            g_aaRefreshAt = 0;
+            ShroudRefreshAAWindow();
+        }
     }
 
     // NMS: keep discipline timer-bands applied (native client re-wraps CARecastTimerID
@@ -391,6 +409,8 @@ void Heartbeat()
         extern void NMSDiscTimers_MaintainBands();
         NMSDiscTimers_MaintainBands();
     }
+
+    { extern void NMSLoNPulse(); NMSLoNPulse(); } // NMS: Legends of Norrath -- close the session login box
 
     if (MultiPet* mp = MultiPet::GetInstance())
         mp->OnPulse();
@@ -834,6 +854,8 @@ public:
             pw->OnSetGameState((int)GameState);
         if (WaypointsWnd* ww = WaypointsWnd::GetInstance())
             ww->OnSetGameState((int)GameState);
+        if (VaultWnd* vw = VaultWnd::GetInstance())
+            vw->OnSetGameState((int)GameState);
         SetGameState_Trampoline(GameState);
     }
 };

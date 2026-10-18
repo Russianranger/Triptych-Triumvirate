@@ -26,6 +26,7 @@ class DynamicZone;
 class DzLockout;
 class ExpeditionRequest;
 class Group;
+class ClientAchievementState;
 class NPC;
 class Object;
 class Raid;
@@ -67,6 +68,7 @@ namespace EQ
 #include "../common/zone_store.h"
 #include "task_manager.h"
 #include "task_client_state.h"
+#include "reward_selection.h"
 #include "cheat_manager.h"
 #include "../common/events/player_events.h"
 #include "../common/data_verification.h"
@@ -342,7 +344,7 @@ void TraderUpdateItem(const EQApplicationPacket *app);
 	bool KeyRingCheck(uint32 item_id);
 	bool KeyRingClear();
 	bool KeyRingRemove(uint32 item_id);
-	void KeyRingList();
+	void KeyRingList(Client* c = nullptr);
 	bool IsNameChangeAllowed();
 	void InvokeChangeNameWindow(bool immediate = true);
 	bool ClearNameChange();
@@ -514,6 +516,7 @@ bool RemoveItemByItemUniqueId(const std::string &item_unique_id, uint32 quantity
 
 	virtual bool Save() { return Save(0); }
 	bool Save(uint8 iCommitNow); // 0 = delayed, 1=async now, 2=sync now
+	bool Save(uint8 iCommitNow, bool update_achievements);
 	inline void SaveCharacterData() {
 		database.SaveCharacterData(this, &m_pp, &m_epp);
 	};
@@ -567,6 +570,25 @@ bool RemoveItemByItemUniqueId(const std::string &item_unique_id, uint32 quantity
 	void        ResendShroudState();
 	inline bool IsShrouded() const { return m_shrouded; }
 	inline uint32 GetShroudID() const { return m_shroud_id; }
+
+	// Live-like monster points / shroud AAs (see Custom:ShroudLiveMode).
+	inline uint32 GetShroudPoints() const { return m_shroud_points; }
+	inline uint32 GetShroudPointsSpent() const { return m_shroud_points_spent; }
+	static bool IsShroudAA(const AA::Ability *ability);
+	void ShroudGrantPoints(uint32 points, uint32 shroud_id, uint32 level);
+	void ShroudLoadPoints();
+	void ShroudSavePoints();
+	void ShroudEndSession();
+	void ShroudReapplyPurchases(bool spend);
+	void ShroudApplyClassSkills(uint8 shroud_class, uint8 shroud_level);
+	// Guide-content gate: which abilities this form/level may see and how many
+	// ranks of each. `ShroudDefinition` is local to shroud.cpp, hence the scalars.
+	void LoadShroudAbilityCaps(const std::string &progression, const std::string &branch, uint8 level);
+	void ClearShroudAbilityCaps();
+	bool IsShroudAbilityForCurrentForm(uint32 aa_id) const;
+	uint32 ShroudAbilityMaxRank(uint32 aa_id) const;
+	void ShroudPurgeOwnedAAs();
+	void FillShroudTransformExtras(ShroudSelf_Struct *shroud);
 
 	void SetPetCommandState(int button, int state);
 
@@ -819,6 +841,18 @@ bool RemoveItemByItemUniqueId(const std::string &item_unique_id, uint32 quantity
 	float GetItemStatValue(const EQ::ItemData* item);
 	float GetBaseExpValueForKill(int conlevel, int tier, EQ::ItemInstance* upgrade_item);
 	bool AddItemExperience(EQ::ItemInstance* item, int conlevel);
+
+	// Power Source (Energeian orb) purity mechanic
+	uint32 CalcWornPurity();
+	void   AddPowerSourceBonuses(StatBonuses* b);
+	void   TryPowerSourceProc(Mob* on, uint16 hand);
+	void   SendPowerSourceUpdate();
+	void   CalcPowerSourceDrain();
+	void   InitializePowerSourceCharge();
+	uint32 GetPowerSourceCharge(EQ::ItemInstance* item);
+	void   SetPowerSourceCharge(EQ::ItemInstance* item, uint32 charge);
+	bool   IsPowerSourceItem(const EQ::ItemInstance* item);
+
 	bool ConsumeItemOnCursor();
 	bool ConsumeUnspentAA();
 	void EjectItemFromSlot(int16 slot_id);
@@ -999,6 +1033,7 @@ public:
 	bool UnlockWaypoint(int32 waypoint_id);
 	bool UnlockWaypoint(std::string waypoint_shortname);
 	void SendWaypointList(bool force = true);
+	void   SendLoNSession();               // OP_NMSLoNSession: card game token (zone/nms_lon_session.cpp)
 	bool AllowAccountWaypoints();
 	bool CheckWaypointGroupFeature();
 	void EnableWaypointGroupFeature();
@@ -1045,6 +1080,13 @@ public:
 	void SetAutoSkillStatus(EQ::skills::SkillType skill_id, bool enabled);
 	const std::vector<EQ::skills::SkillType> GetAutoSkillsList() const;
 	const std::vector<EQ::skills::SkillType> GetAvailableAutoSkills() const;
+
+	inline bool GetNmsVaultBank() const { return m_nms_vault_bank; }
+	inline void SetNmsVaultBank(bool value) { m_nms_vault_bank = value; }
+	inline bool GetNmsVaultMerchant() const { return m_nms_vault_merchant; }
+	inline void SetNmsVaultMerchant(bool value) { m_nms_vault_merchant = value; }
+	inline uint32 GetNmsVaultMerchantId() const { return m_nms_vault_merchant_id; }
+	inline void SetNmsVaultMerchantId(uint32 value) { m_nms_vault_merchant_id = value; }
 
 	uint16 MaxSkill(EQ::skills::SkillType skill_id, uint16 class_id, uint8 level) const;
 	uint16 MaxSkillOriginal(EQ::skills::SkillType skill_id, uint16 class_id, uint16 level) const;
@@ -1229,6 +1271,11 @@ public:
 
 	std::unordered_map<int, int> m_aa_timers_cache; // Cache to store AA timers as key-value pairs (aa_id -> timerID)
 
+	// NMS: name -> winning ability id cache for duplicate AA line deconfliction
+	std::unordered_map<std::string, uint32> m_aa_winner_map;
+	uint32 m_aa_winner_classes = 0;
+	bool   m_aa_winner_valid   = false;
+
 	//New AA Methods
 	void SendAlternateAdvancementRank(int aa_id, int level);
 	void SendAlternateAdvancementTable();
@@ -1255,6 +1302,11 @@ public:
 	void GrantAllAAPoints(uint8 unlock_level = 0, bool skip_grant_only = false);
 	bool HasAlreadyPurchasedRank(AA::Rank* rank);
 	void ListPurchasedAAs(Client *to, std::string search_criteria = std::string());
+
+	// NMS: duplicate AA line deconfliction (multiple abilities sharing a name)
+	const std::unordered_map<std::string, uint32>& GetAAWinnerMap();
+	void InvalidateAAWinnerMap() { m_aa_winner_valid = false; }
+	void MigrateDuplicateAALines();
 
 	bool SendGMCommand(std::string message, bool ignore_status = false);
 
@@ -1351,6 +1403,7 @@ public:
 	int32 GetItemIDAt(int16 slot_id);
 	int32 GetAugmentIDAt(int16 slot_id, uint8 augslot);
 	bool PutItemInInventory(int16 slot_id, const EQ::ItemInstance& inst, bool client_update = false);
+	void RollbackFailedItemPut(int16 slot_id, bool client_update = true);
 	bool PutItemInInventoryWithStacking(EQ::ItemInstance* inst);
 	bool FindNumberOfFreeInventorySlotsWithSizeCheck(std::vector<BuyerLineTradeItems_Struct> items);
 	bool PushItemOnCursor(const EQ::ItemInstance& inst, bool client_update = false);
@@ -1369,6 +1422,7 @@ public:
 	bool SummonApocItem(uint32 item_id, int16 charges = -1, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool attuned = false, uint16 to_slot = EQ::invslot::slotCursor, uint32 ornament_icon = 0, uint32 ornament_idfile = 0, uint32 ornament_hero_model = 0);
 	bool SummonItem(uint32 item_id, int16 charges = -1, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool attuned = false, uint16 to_slot = EQ::invslot::slotCursor, uint32 ornament_icon = 0, uint32 ornament_idfile = 0, uint32 ornament_hero_model = 0);
 	bool ReturnItem(uint32 item_id, int16 charges = -1, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool attuned = false, uint16 to_slot = EQ::invslot::slotCursor, uint32 ornament_icon = 0, uint32 ornament_idfile = 0, uint32 ornament_hero_model = 0);
+	bool SummonItem(uint32 item_id, int16 charges, uint32 aug1, uint32 aug2, uint32 aug3, uint32 aug4, uint32 aug5, uint32 aug6, bool attuned, uint16 to_slot, uint32 ornament_icon, uint32 ornament_idfile, uint32 ornament_hero_model, bool *persistence_succeeded);
 	void SummonItemIntoInventory(uint32 item_id, int16 charges = -1, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool is_attuned = false);
 	void SummonBaggedItems(uint32 bag_item_id, const std::vector<LootItem>& bag_items);
 	void SetStats(uint8 type,int16 set_val);
@@ -1923,6 +1977,56 @@ public:
 	const uint16 GetBoatID() const { return controlling_boat_id; }
 	void SendRewards();
 	bool TryReward(uint32 claim_id);
+	ClientRewardSelection &GetRewardSelection();
+	bool LoadAchievements();
+	bool ReloadAchievements();
+	void SendAchievementPackets();
+	void ProcessAchievementRewards();
+	void NotifyAchievementStateUpdatePending();
+	bool HasCompletedAchievement(uint32 achievement_id) const;
+	int GetAchievementStatus(uint32 achievement_id) const;
+	int64 GetAchievementProgress(
+		uint32 achievement_id,
+		uint8 component_type,
+		uint32 component_id
+	) const;
+	bool PassAchievementCastRestriction(uint32 restriction_id) const;
+	void SendAchievementComparison(uint32 definition_index);
+	void SendAchievementComparisonTo(Client &recipient, uint32 achievement_id);
+	void SendAchievementCompareSnapshotTo(Client &recipient) const;
+	void SendAchievementRewardDisplay(uint32 definition_index);
+	bool RestorePendingAchievementRewardSelection();
+	RewardSelectionDeliveryResult ClaimAchievementReward(
+		uint32 pending_reward_id,
+		uint32 reward_set_id,
+		uint32 selected_option_id
+	);
+	void UpdateAchievementForKill(
+		uint32 npc_type_id,
+		uint32 race_id,
+		uint32 npc_name_identity,
+		uint32 zone_id
+	);
+	void UpdateAchievementForLevel(uint32 level);
+	void UpdateAchievementForTask(uint32 task_id);
+	void UpdateAchievementForZone(uint32 zone_id);
+	void UpdateAchievementForLoot(uint32 item_id, uint32 quantity = 1);
+	void UpdateAchievementForOwnItem(uint32 item_id);
+	void BeginAchievementInventoryTransaction();
+	void EndAchievementInventoryTransaction(bool committed);
+	void UpdateAchievementForTradeskill(uint32 recipe_id);
+	void UpdateAchievementForSkill(uint32 skill_id, uint32 value);
+	void UpdateAchievementForAA(uint32 spent_points);
+	uint32 GetAchievementAAPointsSpent();
+	bool SetAchievementProgress(
+		uint32 achievement_id,
+		uint8 component_type,
+		uint32 component_id,
+		uint32 value,
+		bool additive = false
+	);
+	bool CompleteAchievement(uint32 achievement_id);
+	bool ResetAchievement(uint32 achievement_id, bool reset_rewards = false);
 	QGlobalCache *GetQGlobals() { return qGlobals; }
 	QGlobalCache *CreateQGlobals() { qGlobals = new QGlobalCache(); return qGlobals; }
 	void GuildBankAck();
@@ -1958,8 +2062,9 @@ public:
 	inline void ClearDraggedCorpses() { DraggedCorpses.clear(); }
 	void ConsentCorpses(std::string consent_name, bool deny = false);
 	void SendAltCurrencies();
-	void SetAlternateCurrencyValue(uint32 currency_id, uint32 new_amount);
+	bool SetAlternateCurrencyValue(uint32 currency_id, uint32 new_amount);
 	int AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_scripted = false);
+	int AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_scripted, bool *persistence_succeeded);
 	bool RemoveAlternateCurrencyValue(uint32 currency_id, uint32 amount);
 	void SendAlternateCurrencyValues();
 	void SendAlternateCurrencyValue(uint32 currency_id, bool send_if_null = true);
@@ -2405,6 +2510,10 @@ private:
 
 	// https://github.com/EQEmu/Server/pull/2479
 	bool m_lock_save_position = false;
+
+	bool m_nms_vault_bank = false;
+	bool m_nms_vault_merchant = false;
+	uint32 m_nms_vault_merchant_id = 0;
 public:
 	bool IsLockSavePosition() const;
 	void SetLockSavePosition(bool lock_save_position);
@@ -2482,6 +2591,8 @@ private:
 	Timer proximity_timer;
 	Timer TaskPeriodic_Timer;
 	Timer charm_update_timer;
+	Timer power_source_timer;
+	uint32 m_power_source_save_ticks{0};
 	Timer rest_timer;
 	Timer charm_class_attacks_timer;
 	Timer charm_cast_timer;
@@ -2534,8 +2645,10 @@ private:
 	uint8 npclevel;
 
 	// shrouds
-	bool                 m_shrouded           = false;
-	uint32               m_shroud_id          = 0;
+	bool                 m_shrouded           = false;	uint32               m_shroud_id          = 0;
+	// Guide content for the current form/level: aa_id -> highest rank the guide
+	// grants at or below that level. Empty when nothing is mapped (or unshrouded).
+	std::unordered_map<uint32, uint32> m_shroud_ability_caps;
 	bool                 m_shroud_saved_valid = false;
 	PlayerProfile_Struct m_shroud_saved_pp{};
 	// Base appearance captured when the shroud is applied (the profile only
@@ -2548,6 +2661,11 @@ private:
 	// client is still building the zone crashes its self-spawn re-add.
 	bool                 m_shroud_zonein_pending     = false;
 	uint32               m_shroud_zonein_at          = 0;
+	// Live-like monster points (Custom:ShroudLiveMode bit 4): a separate pool
+	// granted fresh per shroud apply, spent on shroud AAs only, reset on leave.
+	// Kept out of m_pp so the ShroudPersistGuard never sees it.
+	uint32               m_shroud_points             = 0;
+	uint32               m_shroud_points_spent       = 0;
 
 	bool bZoning;
 	bool tgb;
@@ -2658,6 +2776,49 @@ private:
 	std::vector<uint32_t> m_dynamic_zone_ids;
 
 	std::vector<uint32_t> m_completed_shared_tasks;
+	std::unique_ptr<ClientRewardSelection> m_reward_selection;
+	std::unique_ptr<ClientAchievementState> m_achievement_state;
+	enum class DeferredAchievementStateUpdateType : uint8 {
+		Kill,
+		Level,
+		Task,
+		Zone,
+		Loot,
+		Tradeskill,
+		Skill,
+		AlternateAdvancement,
+		SetProgress,
+		Complete
+	};
+	struct DeferredAchievementStateUpdate {
+		DeferredAchievementStateUpdateType type;
+		uint32 value1 = 0;
+		uint32 value2 = 0;
+		uint32 value3 = 0;
+		uint32 value4 = 0;
+		bool flag = false;
+	};
+	bool ShouldDeferAchievementStateUpdate() const;
+	void QueueAchievementStateUpdate(const DeferredAchievementStateUpdate &update);
+	bool ReplaceAchievementState(bool send_initial, bool allow_disabled);
+	void ConfigureAchievementOwnershipReconciliation();
+	bool FlushAchievementInventoryUpdate();
+	void ReplayDeferredAchievementStateUpdates();
+	void ProcessPendingAchievementStateUpdates();
+	std::vector<DeferredAchievementStateUpdate> m_deferred_achievement_state_updates;
+	Timer m_achievement_state_load_retry_timer;
+	Timer m_achievement_ownership_reconcile_timer;
+	Timer m_achievement_window_request_rate_limit;
+	Timer m_achievement_compare_request_rate_limit;
+	Timer m_achievement_link_request_rate_limit;
+	uint32 m_achievement_inventory_transaction_depth = 0;
+	size_t m_achievement_inventory_transaction_update_checkpoint = 0;
+	bool m_achievement_inventory_update_pending = false;
+	bool m_achievement_inventory_transaction_failed = false;
+	bool m_achievement_pending_state_updates = false;
+	bool m_achievement_state_load_pending = false;
+	bool m_achievement_state_load_send_initial = false;
+	bool m_achievement_state_load_allow_disabled = false;
 
 	std::unordered_map<int, bool> m_aa_status_cache;
 

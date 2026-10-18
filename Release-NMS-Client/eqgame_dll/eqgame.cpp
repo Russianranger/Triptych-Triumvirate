@@ -25,6 +25,8 @@
 #include <tlhelp32.h>
 #include <vector>
 
+#include "nms_lon_link.h"
+
 static MultiPet g_multiPet;
 static PetWindow g_petWindow;
 static WhoMulticlass g_whoMulticlass;
@@ -782,13 +784,19 @@ void TriggerLocalAbilityUI(int targetSkillId) {
 
 // NMS: shroud diagnostics. 0 = compile out all shroud runtime logging and
 // packet captures (leave 0 for release builds).
-#ifndef NMS_SHROUD_DIAG
-#define NMS_SHROUD_DIAG 0
-#endif
+// NMS: the shroud diagnostics that used to live here (ShroudLog and friends, the
+// AA-pane probe, packet dumps and the per-opcode probes) were removed once the
+// feature was verified. The only shroud logging left is ShroudPatchLog below: it
+// is always compiled in because a byte-guard mismatch means a patch silently did
+// not apply, which a released build should record.
 
-#if NMS_SHROUD_DIAG
-static void ShroudLog(const char *fmt, ...) {
-  FILE *f = fopen("C:\\EQS\\shroud_dump\\client_shroud.log", "a");
+
+// NMS: status log for the shroud byte-guards. Always compiled in (unlike
+// ShroudLog): a guard mismatch means a patch silently did not apply, which is
+// exactly what a released build should record. Success lines are one short line
+// per patch at startup.
+static void ShroudPatchLog(const char *fmt, ...) {
+  FILE *f = fopen("nms_client_patch.log", "a");
   if (!f)
     return;
   SYSTEMTIME st;
@@ -803,8 +811,228 @@ static void ShroudLog(const char *fmt, ...) {
   fclose(f);
 }
 
-static void ShroudLogCharbase(const char *when);
-static void ShroudDumpRecvPacket(const char *buf, size_t size);
+// NMS: power-source (Energeian orb) support. The server pushes per-instance
+// charge via OP_PowerSource (0x4c89) as {slot, bag, charge, capacity}; the
+// stock client handler expects a different bulk format, so this dll owns the
+// opcode: it writes capacity into the item template's MaxPower (+0x588) and
+// calls the native CONTENTS::SetPower (0x7B0F70), which clamps and refreshes
+// the power bar. NMS_PS_DIAG additionally logs packet/dump detail to
+// nms_client_powersource.log (keep 0 for release).
+#ifndef NMS_PS_DIAG
+#define NMS_PS_DIAG 0
+#endif
+
+static void PSLog(const char *fmt, ...) {
+  FILE *f = fopen("nms_client_powersource.log", "a");
+  if (!f)
+    return;
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  fprintf(f, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond,
+          st.wMilliseconds);
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(f, fmt, args);
+  va_end(args);
+  fprintf(f, "\n");
+  fclose(f);
+}
+
+// Shim for reading the item template exactly like the native power setter:
+// calling GetTpl() through a recast pointer dispatches vtbl[2] (thiscall).
+struct PSCtl_Shim {
+  virtual void *shim0();
+  virtual void *shim1();
+  virtual void *GetTpl();
+};
+
+// Shim to call the native CONTENTS::SetPower (eqgame 0x7B0F70, thiscall):
+// clamps the value to [0, template MaxPower] and sets the dirty flag so the
+// power bar UI refreshes.
+struct PSSetPower_Shim {
+  void SetPower(int value);
+};
+
+// NMS: apply a power-source packet {slot, bag, charge, capacity} ourselves.
+// The stock 0x4c89 client handler expects a different (bulk) format and
+// rejects small packets, so we own this opcode end to end.
+static bool PSApplyPowerPacket(char *buf, size_t size) {
+  if (!buf || size < 16)
+    return false;
+  const unsigned slot = *(unsigned *)(buf + 0);
+  const unsigned bag = *(unsigned *)(buf + 4);
+  const unsigned charge = *(unsigned *)(buf + 8);
+  const unsigned capacity = *(unsigned *)(buf + 12);
+  if (slot != 21 || bag != 0 || capacity == 0)
+    return false;
+
+  __try {
+    PCHARINFO2 ci = GetCharInfo2();
+    if (!ci || !ci->pInventoryArray)
+      return false;
+    PCONTENTS ps = ci->pInventoryArray->Inventory.PowerSource;
+    if (!ps)
+      return false;
+
+    // 1) Template MaxPower gates and clamps everything; write it first.
+    PSCtl_Shim *proxy = (PSCtl_Shim *)ps;
+    unsigned char *tpl = (unsigned char *)proxy->GetTpl();
+    if (!tpl)
+      return false;
+    *(unsigned *)(tpl + 0x588) = capacity;
+
+    // 2) Native SetPower (clamps + marks dirty so the bar redraws).
+    union {
+      void (PSSetPower_Shim::*fn)(int);
+      DWORD addr;
+    } u;
+    const DWORD base = (DWORD)GetModuleHandleA(NULL);
+    u.addr = (DWORD)0x7B0F70 - 0x400000 + base;
+    (((PSSetPower_Shim *)ps)->*u.fn)((int)charge);
+
+    static unsigned last_charge = 0xFFFFFFFF;
+    static unsigned last_cap = 0;
+    if (charge != last_charge || capacity != last_cap) {
+      last_charge = charge;
+      last_cap = capacity;
+      PITEMINFO it2 = ps->Item2;
+      PSLog("applied power=%u capacity=%u tpl=%08X tpl_id=%u", charge,
+            capacity, (unsigned)tpl, it2 ? (unsigned)it2->ItemNumber : 0);
+    }
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    PSLog("apply faulted (suppressed)");
+    return false;
+  }
+}
+
+#if NMS_PS_DIAG
+// Dump the local player's power-source slot. Offsets per EQData.h:
+//   CONTENTS::Power     @0x110  (per-instance current charge, 0x4c89 target)
+//   CONTENTS::ItemSlot  @0x0b6  (client's own slot id for this item)
+//   ITEMINFO::MaxPower  @0x588  (from the item packet's iqbs.Power field)
+static void PSDumpContents(const char *when) {
+  // NOTE: GetCharInfo2() dereferences pCharData which is not valid until the
+  // player is fully in game — 0x00d2 also fires at character select, so the
+  // whole body must stay inside the SEH guard.
+  __try {
+    PCHARINFO2 ci = GetCharInfo2();
+    if (!ci || !ci->pInventoryArray) {
+      PSLog("[%s] no charinfo/inventory", when);
+      return;
+    }
+    PCONTENTS ps = ci->pInventoryArray->Inventory.PowerSource;
+    if (!ps) {
+      PSLog("[%s] powersource slot empty", when);
+      return;
+    }
+    PITEMINFO it = ps->Item1;
+    PSLog("[%s] ps=%08X power=%u slot=%u slot2=%04X item=%08X id=%u maxpower=%u name='%s'",
+          when, (unsigned)ps, (unsigned)ps->Power, (unsigned)ps->ItemSlot,
+          (unsigned)ps->ItemSlot2, (unsigned)it,
+          it ? (unsigned)it->ItemNumber : 0, it ? (unsigned)it->MaxPower : 0,
+          it ? it->Name : "");
+
+    // Read the template the way SetPower does: virtual fn vtbl[2] (slot +8)
+    // returns a pointer whose +0x588 is the clamp max. Also dump Item2.
+    __try {
+      PSCtl_Shim *proxy = (PSCtl_Shim *)ps;
+      unsigned char *tpl = proxy ? (unsigned char *)proxy->GetTpl() : 0;
+      unsigned maxp_tpl = tpl ? *(unsigned *)(tpl + 0x588) : 0;
+      PITEMINFO it2 = ps->Item2;
+      PSLog("[%s] vtbltpl=%08X tpl_maxpower=%u | item1=%08X item2=%08X item2_id=%u item2_maxpower=%u",
+            when, (unsigned)tpl, maxp_tpl, (unsigned)ps->Item1,
+            (unsigned)it2, it2 ? (unsigned)it2->ItemNumber : 0,
+            it2 ? (unsigned)it2->MaxPower : 0);
+      // Sentinel probe: hex windows over the template tail (StackSize/MaxPower/
+      // Purity region) and the contents power region.
+      if (tpl) {
+        char hex[200];
+        size_t off = 0;
+        for (int i = 0x570; i < 0x5A8; i += 4) {
+          off += (size_t)sprintf_s(hex + off, sizeof(hex) - off, "%08X ",
+                                   *(unsigned *)(tpl + i));
+        }
+        PSLog("[%s] tpl[0x570..0x5A8]: %s", when, hex);
+      }
+      {
+        char hex[120];
+        size_t off = 0;
+        for (int i = 0x0F8; i < 0x118; i += 4) {
+          off += (size_t)sprintf_s(hex + off, sizeof(hex) - off, "%08X ",
+                                   *(unsigned *)((unsigned char *)ps + i));
+        }
+        PSLog("[%s] ps[0x0F8..0x118]: %s", when, hex);
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      PSLog("[%s] vtbl template read faulted", when);
+    }
+
+    // Equipment binding summary: which slots hold a CONTENTS whose template
+    // failed to bind (Item1 == 0)? Compares the orb against known-good items.
+    {
+      int with_item = 0, unbound = 0;
+      char missing[256];
+      size_t off = 0;
+      missing[0] = '\0';
+      for (int i = 0; i < 23; ++i) {
+        PCONTENTS c = ci->pInventoryArray->InventoryArray[i];
+        if (!c)
+          continue;
+        if (c->Item1) {
+          ++with_item;
+        } else {
+          ++unbound;
+          off += (size_t)sprintf_s(missing + off, sizeof(missing) - off, "%s%d",
+                                   (off ? "," : ""), i);
+        }
+      }
+      PSLog("[%s] bind: ok=%d unbound=%d slots=[%s]", when, with_item,
+            unbound, missing);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    PSLog("[%s] charinfo/contents read faulted (suppressed)", when);
+  }
+}
+
+// RoF2 OP_ItemPacket (0x368e) wire layout:
+//   [0x00] PacketType u32 (105 = char inventory), [0x04] item serialization
+//   ItemSerializationHeader: +0x04 17-byte uid string, +0x1D slot_type u8,
+//   +0x1E main_slot u16  (i.e. wire offsets 0x19/0x1A inside the serialization)
+static void PSLogItemPacket(const char *buf, size_t size) {
+  if (size < 32)
+    return;
+  unsigned packet_type = (unsigned)*(const uint32_t *)(buf + 0);
+  unsigned main_slot = (unsigned)*(const uint16_t *)(buf + 4 + 26);
+  bool has_orb = false;
+  if (size > 9) {
+    for (size_t i = 0; i + 9 < size; ++i) {
+      if (memcmp(buf + i, "Energeian", 9) == 0) {
+        has_orb = true;
+        break;
+      }
+    }
+  }
+  if (!has_orb && main_slot != 21 && main_slot != 13)
+    return;
+  PSLog("itempacket size=%u type=%u main_slot=%u orb=%s", (unsigned)size,
+        packet_type, main_slot, has_orb ? "yes" : "no");
+  if (!has_orb && main_slot != 13)
+    return;
+  char path[MAX_PATH];
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  sprintf_s(path, sizeof(path),
+            "nms_psitem_s%02u_%02u%02u%02u_%03u.bin",
+            main_slot, st.wHour, st.wMinute, st.wSecond,
+            (unsigned)(GetTickCount() % 1000));
+  FILE *f = fopen(path, "wb");
+  if (f) {
+    fwrite(buf, 1, size, f);
+    fclose(f);
+    PSLog("dumped to %s", path);
+  }
+}
 #endif
 
 // Set after the OP_Shroud self-transform completes; consumed by the pulse
@@ -815,6 +1043,28 @@ static DWORD g_clientBase = 0x400000;
 
 static void ApplyShroudFlowFix(DWORD baseAddress) {
   g_clientBase = baseAddress;
+
+  // The client's AA pane builder walks AA ids 0..49998 only
+  // (eqgame+0x608CDF: 'cmp eax,0C34Fh' / jl).  The shroud content band lives
+  // at 90100-90300, so every shroud row was invisible to the window no matter
+  // what the row contained.  Widen the bound to 100000: enough for the shroud
+  // content band (91000-99999), and deliberately not more.  Nothing else in the
+  // database lives above 90400 today (EQS's own custom AAs are 61xxx/70xxx/71xxx,
+  // which this same client limit already scanned), so no other content changes
+  // visibility.
+  {
+    const DWORD pBound = g_clientBase + (0x608CE0 - 0x400000);
+    const unsigned char expect[4] = {0x4F, 0xC3, 0x00, 0x00};  // 0xC34F = 49999
+    if (memcmp((const void *)pBound, expect, sizeof(expect)) == 0) {
+      const unsigned int bound = 100000;
+      PatchA((LPVOID)pBound, &bound, sizeof(bound));
+      ShroudPatchLog("AA pane scan bound widened to %u @ %08X", bound, pBound);
+    } else {
+      const unsigned char *pb = (const unsigned char *)pBound;
+      ShroudPatchLog("AA pane scan bound patch SKIPPED: %02X %02X %02X %02X @ %08X",
+                pb[0], pb[1], pb[2], pb[3], pBound);
+    }
+  }
   DWORD pNull = (DWORD)0x004C2F60 - 0x400000 + baseAddress;
   DWORD pJz = (DWORD)0x004C2F85 - 0x400000 + baseAddress;
 
@@ -826,89 +1076,54 @@ static void ApplyShroudFlowFix(DWORD baseAddress) {
     static const unsigned char nops[10] = {0x90, 0x90, 0x90, 0x90, 0x90,
                                            0x90, 0x90, 0x90, 0x90, 0x90};
     PatchA((LPVOID)pNull, nops, 10);
-#if NMS_SHROUD_DIAG
-    ShroudLog("shroud fix A applied: NOPed mov [flt_DD2630],0 @ %08X", pNull);
-#endif
+    ShroudPatchLog("shroud fix A applied: NOPed mov [flt_DD2630],0 @ %08X", pNull);
   } else {
-#if NMS_SHROUD_DIAG
-    ShroudLog("shroud fix A SKIPPED: unexpected bytes @ %08X", pNull);
-#endif
+    ShroudPatchLog("shroud fix A SKIPPED: unexpected bytes @ %08X", pNull);
   }
 
   const unsigned char expectJz[2] = {0x75, 0x0A};
   if (memcmp((const void *)pJz, expectJz, 2) == 0) {
     const unsigned char jmp[2] = {0xEB, 0x0A};
     PatchA((LPVOID)pJz, jmp, 2);
-#if NMS_SHROUD_DIAG
-    ShroudLog("shroud fix B applied: jnz->jmp @ %08X", pJz);
-#endif
+    ShroudPatchLog("shroud fix B applied: jnz->jmp @ %08X", pJz);
   } else {
-#if NMS_SHROUD_DIAG
-    ShroudLog("shroud fix B SKIPPED: unexpected bytes @ %08X", pJz);
-#endif
+    ShroudPatchLog("shroud fix B SKIPPED: unexpected bytes @ %08X", pJz);
+  }
+
+  // ---------------------------------------------------------------------
+  // NMS: server-authoritative shroud state (the "monster character" flag).
+  //
+  // The profile applier eqgame+0x5789B0 (called by the OP_Shroud handler at
+  // 0x4C2F6E and by the OP_PlayerProfile applier at 0x579763) copies the wire
+  // profile dword at block+0x350C into BaseProfile+0x3408 -- the field
+  // EQData.h calls "Unknown0x3408"; nothing reads it for shroud purposes.
+  //
+  // The switch the client actually uses is BaseProfile+0x340C ("profileType":
+  // ida sub_7EBB70 stores the key "profileType" into this+0x340C, EQData.h
+  // has "/*0x340c*/ DWORD Shrouded"). It gates the AA window monster mode
+  // (sub_4A40F0 requires Shrouded == 1 or 2), IsShrouded (0x441E70) and the
+  // shroud UI. No server packet reaches it natively: the RoF2 profile has no
+  // such member, and the only writers in the client are the PcProfile
+  // text/binary loaders that no shroud opcode calls.
+  //
+  // Retarget the single store (one displacement byte, same instruction length)
+  // so the server block+0x350C value drives the real field. Behaviour is
+  // unchanged for unshrouded profiles: ENCODE(OP_PlayerProfile) writes 0 to
+  // that wire field, so the flag lands as 0.
+  // ---------------------------------------------------------------------
+  DWORD pShroudStore = (DWORD)0x00579255 - 0x400000 + baseAddress;
+  const unsigned char expectStore[4] = {0x08, 0x34, 0x00, 0x00};
+  if (memcmp((const void *)pShroudStore, expectStore, 4) == 0) {
+    const unsigned char disp340C = 0x0C;  // 0x3408 -> 0x340C
+    PatchA((LPVOID)pShroudStore, &disp340C, 1);
+    ShroudPatchLog("shroud flag store retargeted to BaseProfile+0x340C @ %08X",
+                    pShroudStore);
+  } else {
+    ShroudPatchLog("shroud flag store SKIPPED: unexpected bytes @ %08X",
+                    pShroudStore);
   }
 }
 
-#if NMS_SHROUD_DIAG
-static void ShroudLogPacket(const char *buf, size_t size) {
-  if (size < 6) {
-    ShroudLog("OP_Shroud recv size=%u (too small)", (unsigned)size);
-    return;
-  }
-  unsigned int spawnId = *(const unsigned int *)buf;
-  unsigned short endOff = *(const unsigned short *)(buf + 4);
-  ShroudLog("OP_Shroud recv size=%u spawnId=%u endOffset=%u %s", (unsigned)size,
-            spawnId, endOff,
-            size >= (size_t)endOff + 20472 ? "(self-size ok)"
-                                           : "(SHORT: no 20472 block?)");
-  ShroudLog("  head: %02X %02X %02X %02X %02X %02X | profile[0..15]: "
-            "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X "
-            "%02X %02X %02X",
-            (unsigned char)buf[0], (unsigned char)buf[1], (unsigned char)buf[2],
-            (unsigned char)buf[3], (unsigned char)buf[4], (unsigned char)buf[5],
-            (unsigned char)buf[endOff], (unsigned char)buf[endOff + 1],
-            (unsigned char)buf[endOff + 2], (unsigned char)buf[endOff + 3],
-            (unsigned char)buf[endOff + 4], (unsigned char)buf[endOff + 5],
-            (unsigned char)buf[endOff + 6], (unsigned char)buf[endOff + 7],
-            (unsigned char)buf[endOff + 8], (unsigned char)buf[endOff + 9],
-            (unsigned char)buf[endOff + 10], (unsigned char)buf[endOff + 11],
-            (unsigned char)buf[endOff + 12], (unsigned char)buf[endOff + 13],
-            (unsigned char)buf[endOff + 14], (unsigned char)buf[endOff + 15]);
-  if (size >= (size_t)endOff + 0x18) {
-    // identity block: shrouded(0x00) unk(04) gender(08) race(0C) class(10)
-    // level(11) level1(12)
-    ShroudLog("  identity: shrouded=%u unk04=%u gender=%u race=%u class=%u "
-              "level=%u level1=%u",
-              *(const uint32_t *)(buf + endOff + 0x00),
-              *(const uint32_t *)(buf + endOff + 0x04),
-              (unsigned char)buf[endOff + 0x08],
-              *(const uint32_t *)(buf + endOff + 0x0C),
-              (unsigned char)buf[endOff + 0x10],
-              (unsigned char)buf[endOff + 0x11],
-              (unsigned char)buf[endOff + 0x12]);
-  }
-}
-
-static void ShroudLogPlayerState(const char *when) {
-  PSPAWNINFO p = (PSPAWNINFO)pLocalPlayer;
-  if (!p) {
-    ShroudLog("  [%s] pLocalPlayer=null", when);
-    return;
-  }
-  // flt_DD2630 (relocated) = the client's cached self-spawn pointer; the
-  // OP_Shroud self path NULLs it and the success path reassigns it.
-  DWORD selfPtr = *(DWORD *)(0x00DD2630 - 0x400000 + g_clientBase);
-  ShroudLog("  [%s] me=%08X mySpawnId=%u race=%u gender=%u class=%u level=%u "
-            "standstate=0x%02X hpc=%d selfptr=%08X actor=%08X actorex=%08X "
-            "anim=%d illusion=%u",
-            when, (unsigned)p, (unsigned)p->SpawnID, (unsigned)p->Race,
-            (unsigned)p->Gender, (unsigned)p->Class, (unsigned)p->Level,
-            (unsigned)p->StandState, (int)p->HPCurrent, selfPtr,
-            (unsigned)p->pActorClient, (unsigned)p->pcactorex,
-            (int)p->Animation, (unsigned)p->InNonPCRaceIllusion);
-  ShroudLogCharbase(when);
-}
-#endif
 
 unsigned char __fastcall HandleWorldMessage_Trampoline(
     DWORD * con, DWORD edx, unsigned __int32 unk, unsigned __int16 opcode,
@@ -926,105 +1141,285 @@ void ShroudRestoreHotbars() {
       "HotButtonWnd9", "HotButtonWnd10",
   };
 
-#if NMS_SHROUD_DIAG
-  int shown = 0;
-  int visible = 0;
-#endif
   for (const char *name : kHotbarWnds) {
     CXWnd *wnd = FindMQ2Window((PCHAR)name);
     if (wnd) {
       wnd->Show(true, true);
-#if NMS_SHROUD_DIAG
-      ++shown;
-      if (wnd->IsReallyVisible()) {
-        ++visible;
-      }
-#endif
     }
   }
-#if NMS_SHROUD_DIAG
-  ShroudLog("hotbar restore: %d/%d windows shown, %d visible", shown, visible,
-            (int)(sizeof(kHotbarWnds) / sizeof(kHotbarWnds[0])));
-#endif
 }
 
 int   g_shroudHotbarFixesLeft = 0;
-DWORD g_shroudHotbarNextTick  = 0;
 
-#if NMS_SHROUD_DIAG
-// Capture exactly what the client's applier will consume (20472-byte profile
-// block + raw spawn bytes) for offline diffing vs the server dump.
-// SEH-guarded: instrumentation must never take the client down.
-static void ShroudDumpRecvPacket(const char *buf, size_t size) {
+// NMS: server-authoritative shroud state carrier.
+//
+// The profile block of OP_Shroud carries the shroud flag at +0x350C (server:
+// BuildShroudProfileBlock, Custom:ShroudLiveMode bit 8).  The client switch
+// everything keys off is BaseProfile+0x340C -- but the applier (eqgame+0x5789B0)
+// only writes it *before* the handler re-initialises the profile object:
+// BaseProfile::BaseProfile (eqgame+0x7EF0E0) zeroes 0x340C/0x3410/0x3414/0x3418
+// during the same OP_Shroud, so the value is wiped within the handler.  Capture
+// the server's dword from the packet and re-stamp it after the handler and on
+// each follow-up tick, which makes the server authoritative for the flag.
+uint32_t g_serverShroudState    = 0;
+int    g_serverShroudStateValid = 0;
+int    g_serverShroudStampLeft  = 0;
+DWORD  g_serverShroudStampNext  = 0;
+DWORD  g_aaRefreshAt            = 0;  // coalesced AA-window repopulate
+
+// NMS: AA-window list probe.  The four AA panes hold {text, row-id} entries;
+// the list object keeps its entry count at +472 and the entry vector at +476,
+// each entry 296 bytes with the value (AA rank id) at +16 -- see the AA
+// window refresh eqgame+0x609F90.  Counting shroud-band ids tells us whether
+// the rows were filtered out before reaching the UI or are being listed.
+// NMS: AA table + window probe.
+//  - looks up our shroud rows in the client's AA table (manager dword_D20358)
+//    and dumps the fields the gates read (shroud byte +144, category +140,
+//    classes +104, total_cost +112, prev/next +116/+120, current/max +36/+108)
+//  - enumerates the four AA panes' entries (count at list+472, vector at +476,
+//    296-byte entries with the value at +16 -- see eqgame+0x609F90)
+// NMS: one-shot diagnostic re-run after the auto-grant removal.  Answers:
+//   - what the client believes it owns (full AAList scan)
+//   - whether the table holds rows for the ability ids themselves
+//   - whether the monster pane still lists a normal row that merely carries the
+//     shroud byte (does the path work at all now?)
+//   - whether our row's payload still disqualifies a normal row
+static int g_diagDone = 0;
+
+static int NMSDiagPaneScan(void *aa, int wantOurs, int wantA) {
+  unsigned char *ab = (unsigned char *)aa;
+  int total = 0;
+  for (int li = 0; li < 4; ++li) {
+    unsigned char *l = *(unsigned char **)(ab + 672 + 4 * li);
+    if (!l)
+      continue;
+    const unsigned int c = *(unsigned int *)(l + 472);
+    const unsigned char *dp = *(const unsigned char **)(l + 476);
+    if (c > 5000 || !dp)
+      continue;
+    total += (int)c;
+    for (unsigned int e = 0; e < c && e < 400; ++e) {
+      const unsigned int id = *(const unsigned int *)(dp + 296 * e + 16);
+      if (id == 90300)
+        wantOurs = 1;
+      if (id == 41841)
+        wantA = 1;
+    }
+  }
+  return (wantOurs ? 1 : 0) | (wantA ? 2 : 0) | (total << 8);
+}
+
+
+void ShroudRefreshAAWindow(void) {
   __try {
-    if (size >= 6) {
-      unsigned short endOff = *(const unsigned short *)(buf + 4);
-      if (size >= (size_t)endOff + 20472) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        char name[300];
-        sprintf_s(name, sizeof(name),
-                  "C:\\EQS\\shroud_dump\\client_recv_block_%02u%02u%02u_"
-                  "%02u%02u%02u%03u.bin",
-                  st.wYear % 100, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                  st.wSecond, st.wMilliseconds);
-        FILE *df = fopen(name, "wb");
-        if (df) {
-          fwrite(buf + endOff, 1, 20472, df);
-          fclose(df);
-          ShroudLog("  dumped %s", name);
-        }
-        sprintf_s(name, sizeof(name),
-                  "C:\\EQS\\shroud_dump\\client_recv_spawn_%02u%02u%02u_"
-                  "%02u%02u%02u%03u.bin",
-                  st.wYear % 100, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                  st.wSecond, st.wMilliseconds);
-        df = fopen(name, "wb");
-        if (df) {
-          fwrite(buf + 6, 1, endOff - 6, df);
-          fclose(df);
-        }
+    CXWnd *aaWnd = FindMQ2Window("AAWindow");
+    if (!aaWnd)
+      return;
+    typedef void(__fastcall * AARefresh_t)(void *, int);
+    AARefresh_t refresh = (AARefresh_t)(g_clientBase + (0x609F90 - 0x400000));
+    refresh((void *)aaWnd, 0);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+}
+
+void ShroudStampServerState(const char *when) {
+  if (!g_serverShroudStateValid)
+    return;
+  __try {
+    PCHARINFO2 ci = GetCharInfo2();
+    if (ci) {
+      unsigned char *bb = reinterpret_cast<unsigned char *>(ci);
+      unsigned int *flag = reinterpret_cast<unsigned int *>(bb + 0x340C);
+      if (*flag != g_serverShroudState) {
+        *flag = g_serverShroudState;
+        // The AA window's panes are populated by the refresh at
+        // eqgame+0x609F90 (-> sub_608AC0, which filters rows through the
+        // monster gate).  That populate runs inside the OP_Shroud handler,
+        // before this stamp, so it saw 'not shrouded' and produced an empty
+        // monster list.  Re-run it now that the server's state is applied.
+        ShroudRefreshAAWindow();
       }
     }
   } __except (EXCEPTION_EXECUTE_HANDLER) {
-    ShroudLog("  recv capture faulted (suppressed)");
+  }
+}
+DWORD g_shroudHotbarNextTick  = 0;
+
+
+// Legends of Norrath (the in-game card game). eqgame hands the card game's DLL
+// --username= and --sessionID= on its command line (setters 0x7A14B0 /
+// 0x7A1460, argv built at 0x7A192E). On live the Station login filled the
+// session id; on our server eqgame always passes "", so the card game fell
+// back to its username/password box. With a session id it logs in by itself
+// (LoginCommand_SendSessionID) as the EQ account -- no box. The card game's
+// service accepts any id; anything of value goes through the zone server.
+//
+// This REPLACES the setter -- the original is never called. Its two copy
+// loops jump back to 0x7A1462, inside the 5 bytes the detour overwrites, so
+// running the trampoline crashed eqgame the moment it set the id at startup.
+// Buffer 0xF800D0 is 0x40 bytes (the next global is 0xF80110).
+DETOUR_TRAMPOLINE_EMPTY(void __cdecl LoNSetSessionID_Tramp(const char *));
+void __cdecl LoNSetSessionID_Detour(const char *session) {
+  // The token zone sent (OP_NMSLoNSession) is the only login world's card service
+  // accepts; until it arrives, a placeholder the service refuses.
+  if (const char *token = NMSLoN::Token()) {
+    session = token;
+  }
+  if (!session || !*session) {
+    session = "NMS";
+  }
+  char *buf = (char *)(((DWORD)0x00F800D0 - 0x400000) + baseAddress);
+  _snprintf_s(buf, 0x40, _TRUNCATE, "--sessionID=%s", session);
+}
+
+// Legends of Norrath: the "Session Login -- Entering main lobby..." box never
+// leaves on its own. WASessionLoginDialog's login-result handler (LoN RVA
+// 0x4A6E50, __thiscall(dialog, event)) only sets that status on success and
+// waits for a screen switch our service never triggers; its failure path closes
+// the box with QWidget::close. So after a successful result, queue the same
+// close for Qt's next pass -- QTimer::singleShot(0, box, SLOT(close())) -- rather
+// than closing the box inside its own handler. Event fields come from LoN RVA
+// 0xACAA0 (__thiscall(event, index)): each field has its type at +8 and value
+// at +4; field 0 = success (type 1, bool), field 1 = reason (type 2, int; 0x4C =
+// "register a username first", which must keep the box).
+typedef const BYTE *(__thiscall *LoNEventArg_t)(void *event, int index);
+typedef void(__cdecl *QtSingleShot_t)(int msec, void *receiver, const char *member);
+typedef void(__fastcall *LoNLoginResult_t)(void *dialog, void *edx, void *event);
+static LoNEventArg_t s_LoNEventArg = nullptr;
+static QtSingleShot_t s_QtSingleShot = nullptr;
+static LoNLoginResult_t s_LoNLoginResult_Tramp = nullptr;
+
+void __fastcall LoNLoginResult_Detour(void *dialog, void *edx, void *event) {
+  if (s_LoNLoginResult_Tramp) {
+    s_LoNLoginResult_Tramp(dialog, edx, event);
+  }
+  if (!dialog || !event || !s_LoNEventArg || !s_QtSingleShot) {
+    return;
+  }
+  const BYTE *ok = s_LoNEventArg(event, 0);
+  const BYTE *why = s_LoNEventArg(event, 1);
+  const bool success = ok && *(const int *)(ok + 8) == 1 && ok[4] != 0;
+  const int reason = (why && *(const int *)(why + 8) == 2) ? *(const int *)(why + 4) : 0;
+  if (success && reason != 0x4C) {
+    s_QtSingleShot(0, dialog, "1close()");
   }
 }
 
-// Client character-object state the OP_Shroud handler mutates (0x2DD4 is set
-// to 1 at eqgame+0x4C3112; the class gate at 0x443F50 reads 0x3374).
-static void ShroudLogCharbase(const char *when) {
-  __try {
-    PCHARINFO2 cb = GetCharInfo2();
-    if (cb) {
-      const unsigned char *bb = reinterpret_cast<const unsigned char *>(cb);
-      ShroudLog("  [%s] charbase=%08X [0x2DC8]=%u [0x2DD4]=%u [0x3374]=%u",
-                when, (unsigned)cb, bb[0x2DC8], bb[0x2DD4], bb[0x3374]);
-    } else {
-      ShroudLog("  [%s] charbase=null", when);
-    }
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    ShroudLog("  [%s] charbase read faulted (suppressed)", when);
+// Called every frame (MQ2Pulse.cpp). LegendsOfNorrath.dll only loads when the
+// player opens the card game, and closing it UNLOADS it (Qt too); the next open
+// loads a fresh copy, usually at another address. So the hook goes in on every
+// load -- hooking only the first one left the box stuck on every later open until
+// EQ was restarted. Only if the handler's first bytes are the
+// build this was written against.
+//
+// DetourFunction builds a fresh trampoline per hook and keeps no list, so a hook
+// whose DLL has since unloaded is simply forgotten: nothing ever writes into the
+// freed memory (MQ's RemoveOurDetours would, at EQ exit).
+void NMSLoNPulse() {
+  static HMODULE seen = nullptr;
+  HMODULE lon = GetModuleHandleA("LegendsOfNorrath.dll");
+  // Casual PvP host patches: checked every frame, so a copy reloaded at the
+  // same address is patched again too.
+  NMSLoN::PvPHostPulse(lon);
+  // Soundtrack: the 2013 embedded build has no audio of its own (nms_lon_link.cpp).
+  NMSLoN::MusicPulse(lon);
+  if (lon == seen) {
+    return;
   }
+  seen = lon;
+  s_LoNLoginResult_Tramp = nullptr;  // the previous copy's code is gone
+  s_QtSingleShot = nullptr;
+  s_LoNEventArg = nullptr;
+  if (!lon) {
+    return;
+  }
+  HMODULE qtcore = GetModuleHandleA("QtCore4.dll");
+  const BYTE *handler = (const BYTE *)lon + 0x4A6E50;
+  const BYTE *getter = (const BYTE *)lon + 0xACAA0;
+  if (!qtcore || handler[0] != 0x6A || handler[1] != 0xFF || handler[2] != 0x68 ||
+      getter[0] != 0x56 || getter[1] != 0x8B || getter[2] != 0xF1) {
+    return;  // a different LoN build: leave the box alone
+  }
+  QtSingleShot_t shot = (QtSingleShot_t)GetProcAddress(
+      qtcore, "?singleShot@QTimer@@SAXHPAVQObject@@PBD@Z");
+  if (!shot) {
+    return;
+  }
+  s_QtSingleShot = shot;
+  s_LoNEventArg = (LoNEventArg_t)getter;
+  s_LoNLoginResult_Tramp = (LoNLoginResult_t)DetourFunction((PBYTE)handler, (PBYTE)LoNLoginResult_Detour);
 }
-#endif
+
 
 unsigned char __fastcall HandleWorldMessage_Detour(DWORD *con, DWORD edx,
                                                    unsigned __int32 unk,
                                                    unsigned __int16 opcode,
                                                    char *buf, size_t size) {
-  // NMS: shroud self-transform flow fix (RoF2 OP_Shroud 0x6562)
-  if (opcode == 0x6562) {
-#if NMS_SHROUD_DIAG
-    ShroudLogPlayerState("before");
-    ShroudLogPacket(buf, size);
-    ShroudDumpRecvPacket(buf, size);
+#if NMS_PS_DIAG
+  // RoF2 OP_ItemPacket: log the orb's item serialization (and any slot-21 item)
+  if (opcode == 0x368e) {
+    PSLogItemPacket(buf, size);
+  }
+  // RoF2 OP_PowerSource: fully owned — apply charge/capacity via the native
+  // SetPower and skip the stock handler (it expects a different format).
+  if (opcode == 0x4c89) {
+    PSLog("recv opcode=0x4c89 size=%u [0]=%u [4]=%u [8]=%u [12]=%u",
+          (unsigned)size,
+          size >= 4 ? (unsigned)*(uint32_t *)(buf + 0) : 0,
+          size >= 8 ? (unsigned)*(uint32_t *)(buf + 4) : 0,
+          size >= 12 ? (unsigned)*(uint32_t *)(buf + 8) : 0,
+          size >= 16 ? (unsigned)*(uint32_t *)(buf + 12) : 0);
+    if (PSApplyPowerPacket(buf, size)) {
+      PSDumpContents("after-apply");
+      return 1;
+    }
+    // Fallback: let the native handler see it (it rejects <40-byte packets).
+    unsigned char ps_ret =
+        HandleWorldMessage_Trampoline(con, edx, unk, opcode, buf, size);
+    PSDumpContents("after-handler-fallback");
+    return ps_ret;
+  }
+#else
+  // RoF2 OP_PowerSource: apply charge/capacity via the native SetPower; fall
+  // back to the stock handler (which rejects small packets) on any failure.
+  if (opcode == 0x4c89 && PSApplyPowerPacket(buf, size))
+    return 1;
 #endif
+  // NMS: shroud self-transform flow fix (RoF2 OP_Shroud 0x6562)
+  if (opcode == 0x66b5 || opcode == 0x7a27) {
+    // NMS: our monster rows only exist in the client's AA table while the
+    // shroud is applied, and the table is rebuilt around the OP_Shroud
+    // transform.  The window's populate (eqgame+0x608AC0) runs on the first
+    // packet of the burst, i.e. before the rows land, so coalesce the burst
+    // and repopulate once it goes quiet (see the pulse hook).
+    if (g_serverShroudStateValid && g_serverShroudState > 0) {
+      g_aaRefreshAt = GetTickCount() + 700;
+    }
+  }
+  if (opcode == 0x6562) {
+    // Capture the server's shroud-state dword from the profile block
+    // (offset +0x350C).  Guarded so the other-player shroud form (which has no
+    // profile block) cannot feed us garbage: accept only 0/1 from a block whose
+    // identity bytes look like a real profile.
+    if (size >= 6) {
+      unsigned short endOff = *(unsigned short *)(buf + 4);
+      if (endOff >= 6 && (size_t)endOff + 0x350C + 4 <= size) {
+        const unsigned char *blk = (const unsigned char *)(buf + endOff);
+        const unsigned int state = *(const unsigned int *)(blk + 0x350C);
+        const bool looks_like_profile =
+            blk[0x10] >= 1 && blk[0x10] <= 16 &&
+            blk[0x11] >= 1 && blk[0x11] <= 100 && blk[0x08] <= 2;
+        if (looks_like_profile && state <= 2) {
+          g_serverShroudState = state;
+          g_serverShroudStateValid = 1;
+          g_serverShroudStampLeft = 12;
+          g_serverShroudStampNext = GetTickCount() + 500;
+        }
+      }
+    }
     unsigned char shroud_ret =
         HandleWorldMessage_Trampoline(con, edx, unk, opcode, buf, size);
-#if NMS_SHROUD_DIAG
-    ShroudLogPlayerState("after");
-#endif
+    ShroudStampServerState("after-apply");
     // The transform animation leaves the actor in its last frame (this branch
     // fails to rebuild the shroud model); nudge the pose with /sit + /stand.
     extern bool g_shroudPoseFix;
@@ -1073,6 +1468,9 @@ unsigned char __fastcall HandleWorldMessage_Detour(DWORD *con, DWORD edx,
   // NMS: Hook OP_SendCharInfo (0x4513 / 0x00d2) to read multiclass data (Multiclass way)
   if (opcode == 0x4513 || opcode == 0x00d2) {
     ProcessNMSCharSelect(buf, size);
+#if NMS_PS_DIAG
+    PSDumpContents("charinfo");
+#endif
   }
   {
     WhoMulticlass *wm = WhoMulticlass::GetInstance();
@@ -1106,6 +1504,9 @@ unsigned char __fastcall HandleWorldMessage_Detour(DWORD *con, DWORD edx,
       WaypointsWnd::OnIncomingPacket(opcode, buf, size);
       return 1; // Suppress from native client
       break;
+  case 0x141C: // OP_NMSLoNSession -- the card game's login token + where to relay it
+      NMSLoN::OnSession(buf, size);
+      return 1; // Suppress: RoF2 knows nothing about this opcode
   case 0x1341:
     // OP_PetList is handled by MultiPet above.
     // This case is kept to avoid routing the opcode elsewhere if
@@ -1162,6 +1563,14 @@ unsigned char __fastcall WorldRoutePacket_Detour(void *thisPtr, void *edx,
       ProcessNMSCharSelect(buf + 2, size - 2);
     }
   }
+#if NMS_PS_DIAG
+  if (opcode == 0x368e && buf && size >= 6) {
+    PSLogItemPacket(buf + 2, size - 2); // strip 2-byte wire opcode prefix
+  }
+  if (opcode == 0x00d2) {
+    PSDumpContents("charinfo-worldroute");
+  }
+#endif
 
   return WorldRoutePacket_Trampoline(thisPtr, edx, connection, buf, size);
 }
@@ -1175,6 +1584,35 @@ unsigned char __fastcall UdpRoutePacket_Detour(void *thisPtr, void *edx,
                                                uint32_t unk,
                                                unsigned __int16 opcode,
                                                char *buf, uint32_t size) {
+#if NMS_PS_DIAG
+  // Temporary: opcode histogram (deduped) so we can see which packets route
+  // through this layer at zone-in.
+  {
+    static unsigned __int16 last_op = 0xFFFF;
+    static uint32_t last_sz = 0;
+    static unsigned rep = 0;
+    static unsigned total = 0;
+    if (total < 4000) {
+      if (opcode == last_op && size == last_sz) {
+        ++rep;
+      } else {
+        if (rep > 0)
+          PSLog("udp op=0x%04x size=%u (x%u)", last_op, (unsigned)last_sz, rep);
+        PSLog("udp op=0x%04x size=%u", opcode, (unsigned)size);
+        last_op = opcode;
+        last_sz = size;
+        rep = 0;
+        ++total;
+      }
+    }
+  }
+  if (opcode == 0x368e && buf) {
+    PSLogItemPacket(buf, size);
+  }
+  if (opcode == 0x00d2) {
+    PSDumpContents("charinfo-udp");
+  }
+#endif
   if (opcode == 0x4513 || opcode == 0x00d2) {
     if (size >= 4) {
       ProcessNMSCharSelect(buf, size);
@@ -1274,6 +1712,7 @@ unsigned char __fastcall SendMessage_Detour(DWORD *con, unsigned __int32 unk,
   bExeChecksumrequested = 1;
   uint16_t opcode = 0;
   memcpy(&opcode, buf, 2);
+
 
   SimpleLog("SendMessage_Detour: Opcode 0x%04x, size %u", opcode, size);
 
@@ -1642,6 +2081,8 @@ void InitHooks() {
     return;
   InitOptions();
 
+
+
   // NMS: Enable AA exp slider to work at level 1
   if (isAAEnabledAtLvl1) {
     DWORD var = 0;
@@ -1978,6 +2419,13 @@ void InitHooks() {
     EzDetour(jmpToDeviceGamma, SetDeviceGammaRamp_Hook,
              SetDeviceGammaRamp_Trampoline);
   }
+
+  // Legends of Norrath: a session id instead of the password box (see
+  // LoNSetSessionID_Detour).
+  var = (((DWORD)0x007A1460 - 0x400000) + baseAddress);
+  EzDetour((DWORD)var, LoNSetSessionID_Detour, LoNSetSessionID_Tramp);
+  // ...and point the card game at our server (nms_lon_link.cpp).
+  NMSLoN::Install(baseAddress);
 
   // EzDetour(0x00537E4B, &Eqmachooks::CEverQuest__StripName_Detour,
   // &Eqmachooks::CEverQuest__StripName_Trampoline); EzDetour(0x00537D39,

@@ -14,11 +14,17 @@ dodh.tasks = {
   eyes_wide_open         = 505747, -- Treddlehoop: Bloody Cloth Eye Patch
   misty_for_you          = 505748, -- Coldwind Blackfoot (Nektulos): Moon-shaped Diamond Pendant
   eye_bound              = 505749, -- Coldwind Blackfoot: Vule's Eye
+  scavenger_hunting      = 505762, -- Treddlehoop (Corathus): Signature Monocle
+  parts_research         = 505763, -- Bellfast caster/research variant (#Bellfast.lua)
 }
 
 dodh.items = {
   -- access chain
   treddlehoop_device    = 88005, -- Treddlehoop's Wonderful Monoculor Seeing Device
+  monocle_signature     = 88001, -- Treddlehoop's Signature Monocle (Scavenger Hunting reward)
+  tentacle_cluster      = 88002, -- Shiliskin Tentacle Cluster (Scavenger Hunting)
+  silk_gland            = 88003, -- Drachnid Silk Gland (Scavenger Hunting)
+  chopping_sword        = 88004, -- Chopping Sword (Scavenger Hunting)
   shard_mystical_glass  = 88006,
   study_mystical_vision = 88007,
   coral_golden_necklace = 88009,

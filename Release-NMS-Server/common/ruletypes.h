@@ -764,6 +764,17 @@ RULE_BOOL(TaskSystem, UpdateOneElementPerTask, true, "If true (live-like) task u
 RULE_INT(TaskSystem, MaxUpdateMessages, 50, "Maximum update messages for non-GiveCash activity types in IncrementDoneCount")
 RULE_CATEGORY_END()
 
+RULE_CATEGORY(Achievements)
+RULE_BOOL(Achievements, EnableAchievements, true, "Enable the server-side achievement system")
+RULE_BOOL(Achievements, GrantRewards, true, "Grant configured achievement rewards when an achievement is completed")
+RULE_BOOL(Achievements, GuildMemberNotifications, true, "Notify guild members when a player completes an achievement")
+RULE_BOOL(Achievements, NearbyPlayerNotifications, true, "Notify nearby players in the same zone when a player completes an achievement")
+RULE_INT(Achievements, NearbyPlayerNotificationDistance, 200, "Maximum distance for nearby achievement completion notifications; set to 0 to disable")
+RULE_INT(Achievements, CompletionNotificationIntervalMS, 750, "Minimum milliseconds between achievement completion notifications; notifications earned during login reconciliation are queued and delivered in order")
+RULE_INT(Achievements, RewardGrantsPerTick, 8, "Maximum completed achievements whose automatic rewards are processed for one client per process tick")
+RULE_INT(Achievements, OwnershipReconcileIntervalMS, 30000, "Interval in milliseconds for authoritative owned-item reconciliation; set to 0 to disable periodic reconciliation")
+RULE_CATEGORY_END()
+
 RULE_CATEGORY(Range)
 RULE_INT(Range, Say, 135, "The range that is required before /say or hail messages will work to an NPC")
 RULE_INT(Range, Emote, 135, "The packet range in which emote messages are sent'")
@@ -1199,9 +1210,12 @@ RULE_CATEGORY(Custom)
 RULE_BOOL(Custom, 	ServerAuthStats, 						true, "Enable this rule in order to send explicit client updates. Requires client dll.")
 RULE_BOOL(Custom, 	MulticlassingEnabled, 					true, "Enable this to enable all multiclass-related tweaks. Requires ServerAuthStats and UseDynamicAATimers for full functionality.")
 RULE_BOOL(Custom, 	UseDynamicAATimers, 					true, "Enable using dynamic AA timers. Required to deconflict multiclass AA timers")
+RULE_BOOL(Custom, 	DedupeAALines, 							true, "Collapse duplicate AA lines that share a name, showing and granting only the strongest line per name.")
 
 // Spirit Shrouds
 RULE_BOOL(Custom, 	ShroudsEnabled, 						true, "Enable the spirit-shroud system (Shrouds window and shroud forms).")
+RULE_INT(Custom, 	ShroudLiveMode, 						0, "Bitmask for live-like shroud AAs / monster points: 1 = profile block 0x00 shroud flag, 2 = profile block 0x4FC0 shroud-state flag, 4 = live-like strip (display gear/spellbook/AA swap) + monster points + shroud AA purchases (categories 3/4), 8 = server-authoritative client shroud flag (writes the state dword at profile block 0x350C; requires the patched dinput8.dll that retargets the store at eqgame+0x579253 from BaseProfile+0x3408 to +0x340C). Recommended 12.")
+RULE_INT(Custom, 	ShroudMonsterPointScale, 				100, "Percent multiplier applied to the monster-point grant for a shroud form (100 = the live guide's baseline ladder: a 10-point starter below level 20, then 32/36/40/45/50/55 at levels 20-45, 78 at 50, 84 at 55, 91 at 60, 97 at 65, 104 at 70). 0 grants no monster points at all (the guide's strict values, where a low-level form's basics are free); the guide's per-form totals otherwise vary by up to about 40 percent, so raise this if the baseline feels stingy.")
 
 // NMS Options
 RULE_BOOL(Custom, 	SuspendGroupBuffs, 						true, 	"Enable this to cause self buffs and group's buffs to not tick down")
@@ -1210,8 +1224,8 @@ RULE_BOOL(Custom, 	FadeNPCDebuffsOutofCombat, 				true, 	"Enable to to cause NPC
 RULE_BOOL(Custom, 	UseNMSItemMutations, 					true, 	"Rename items according to NMS standards and apply other mutations")
 RULE_BOOL(Custom, 	ClearRestingDetrimentalEffectsEnabled, 	true, 	"Remove detrimental spell effects from self and pets when OOC regen engages")
 RULE_REAL(Custom, 	ItemExtraSpellAmtMaximumPercentage, 	0.0000000000000, 	"Adjust the maximum effectiveness of Spell Damage and Heal Amount. 0.0 to Disable, 1.0 to allow adding up to the base effect value, 2.0 to allow double effect value, etc.")
-RULE_INT(Custom,    AbsolutePetLimit, 						9, 	    "Maximum number of permanent pets that a player can control.")
-RULE_REAL(Custom,	PetPlacementAdjustment,					-0.6000000238419,  	"Adjust pet formation positioning")
+	RULE_INT(Custom,    AbsolutePetLimit, 						9, 	    "Maximum number of permanent pets that a player can control.")
+	RULE_REAL(Custom,	PetPlacementAdjustment,					-0.6000000238419,  	"Adjust pet formation positioning")
 RULE_REAL(Custom,	PetPlacementDistance ,					7.0000000000000,  	"Adjust pet formation positioning")
 RULE_REAL(Custom, 	NonDaggerBackstabMultiplier1H, 			0.800000000000, 	"Multiple Backstabs conducted with not-1hp by this amount")
 RULE_REAL(Custom, 	NonDaggerBackstabMultiplier2H,			0.5000000000000, 	"Multiple Backstabs conducted with not-1hp 2h weapon by this amount")
@@ -1233,6 +1247,23 @@ RULE_BOOL(Custom, 	PowerSourceItemUpgrade, 		 		true, "Enable to add Power Sourc
 RULE_REAL(Custom, 	PowerSourceItemUpgradeRateScale, 		100.0, "Scale XP rate of items using this value.")
 RULE_REAL(Custom, 	PowerSourceItemTier1RateFloor,			0.75, "Smallest percentage item XP that a white can can award for a tier 1 item")
 RULE_REAL(Custom, 	PowerSourceItemTier2RateFloor,			0.07500000014901, "Smallest percentage item XP that a white can can award for a tier 2 item")
+
+// Power Source (Energeian orbs) purity mechanic
+RULE_BOOL(Custom, 	PowerSourceEnabled, 				true, "Enable the Power Source purity mechanic (Energeian orbs and similar).")
+RULE_INT(Custom, 	PowerSourcePurityCap, 				12000, "Maximum total worn purity counted toward Power Source scaling.")
+RULE_INT(Custom, 	PowerSourceMaxCharge, 				12000, "Maximum charge a Power Source item can hold.")
+RULE_REAL(Custom, 	PowerSourceDrainBase, 				2.0000000000000, "Power drained per second while equipped with exactly one eligible (purity>0) worn item.")
+RULE_REAL(Custom, 	PowerSourceDrainStep, 				2.5555555820465, "Additional power drained per second for each extra eligible worn item (23/9).")
+RULE_INT(Custom, 	PowerSourceTickMs, 					6000, "Tick interval, in milliseconds, for Power Source charge drain.")
+
+// Nautilus Vault (key item, #vault_* commands, Proc Locker, clicky autoload, vault bank/merchant)
+RULE_BOOL(Custom, 	NautilusVault,						true, "Enable the Nautilus Vault (#vault_*) storage, Proc Locker, clicky autoload, vault bank/merchant, and the Nautilus Vault inventory key. Off = no vault commands, grant, or combat hooks.")
+RULE_BOOL(Custom, 	ProcLockerStacks,					true, "When true, the Nautilus Vault Proc Locker procs independently of the held weapon and its augs (all can proc in one swing). When false, the locker item replaces the held weapon's proc and suppresses its aug procs (reference behavior).")
+RULE_BOOL(Custom, 	ProcLockerModSlots,					true, "When true, Nautilus Vault slots 84-87 (the Foci/Skill Mod placeholders on the Proc Locker page) lend their item's skill mods, instrument mods, and focus effects - never stats or procs. Free-form: any non-container item can be parked, which is how a bard parks a second instrument.")
+RULE_REAL(Custom, 	PowerSourceDrainMultiplier, 		1.0000000000000, "Global multiplier applied to Power Source drain rate (set below 1.0 to slow drain).")
+
+// Level-based zone version routing
+RULE_INT(Custom, 	LevelBasedZoneRouting,					0,		"Route open-world zone-ins by player level using the zone_level_routes table (e.g. level 60+ to a version 1 zone or a replacement zone). Zones with route rows ignore static-global instance attach; toggle takes effect live via #rules reload.")
 
 // General QoL and Customizations
 RULE_BOOL(Custom, 	UseDynamicItemDiscoveryTags, 			true, "Enable appfending Discovered By: items using the charmfile method")
@@ -1329,6 +1360,41 @@ RULE_BOOL(Custom,   PermanentServerBuffsEnabled,            false,   "Enable or 
 RULE_BOOL(Custom,   GuideAudit,                             true,    "Enable command auditing for guides/GMs of status 80 or higher.")
 RULE_INT(Custom,    FabledDefaultChance,                    50,      "Percent chance used by #fabled on when no chance is given. Read only at command time, never per spawn.")
 RULE_BOOL(Custom,   AllowAllClassesClickItems,              false,   "Allow all classes to click all items regardless of class restrictions on click effects.")
+
+// Legends of Norrath card game (world/lon_service.cpp). The server owns every card; the client's
+// dinput8 relays the card game's local connection here with a one-time token zone hands it.
+RULE_BOOL(Custom,   LoNEnabled,                             false,   "Run the Legends of Norrath card service in world (cards, decks, packs, loot, scenario rewards). Off = the card game cannot log in.")
+RULE_INT(Custom,    LoNPort,                                15792,   "TCP port world listens on for the card game (the client's dinput8 relays the card game's 127.0.0.1:15782 here). Restart world after a change.")
+RULE_STRING(Custom, LoNPublicHost,                          "",      "Host or IP the client's dinput8 relays the card game to. Empty = the address the client already uses for this server (zone sends world's address).")
+RULE_STRING(Custom, LoNDataPath,                            "lon_data", "Folder (relative to the server root) holding the card game's data: archetypes/index.dat + storage.dat, decks/*.eqd, campaign.dat -- copied from the client's LegendsOfNorrath/data.")
+RULE_INT(Custom,    LoNLootPermille,                        125,     "Chance per booster (per mille) that the rare slot is an EverQuest loot card. 125 = 1 in 8, what live players reported.")
+RULE_INT(Custom,    LoNUltraRarePermille,                   125,     "Chance per booster (per mille, sets that have them) that the rare slot is an Ultra Rare. Live never published it; 125 = 1 in 8.")
+RULE_INT(Custom,    LoNMonthlyPacks,                        0,       "Free 'Choose a Pack' cards each account gets once per calendar month (live gave EQ subscribers 5 boosters a month). 0 = none: free packs invite throwaway accounts; sell or grant boosters your own way (lon_delivery).")
+RULE_INT(Custom,    LoNMinScenarioSeconds,                  120,     "A scenario win pays a reward only if the client reported the game's begin at least this many seconds before its end.")
+RULE_INT(Custom,    LoNMinScenarioTurns,                    3,       "A scenario win pays a reward only if it lasted at least this many turns.")
+RULE_BOOL(Custom,   LoNActiveLooterOnly,                    true,    "Legends of Norrath: one card game per PC -- only a character IsActiveLooter() (world/lon_service.cpp) allows may play. The bundled IsActiveLooter() is a stub that allows everyone until you implement it. Checked at card game login and every few seconds after.")
+RULE_INT(Custom,    LoNMaxCustomAvatars,                    5,       "Legends of Norrath: custom avatars an account may keep (default 5). Deleting one frees a slot.")
+RULE_INT(Custom,    LoNPostedTradeDays,                   7,       "Legends of Norrath: a posted trade nobody accepts expires after this many days and the poster gets the offered cards back.")
+RULE_BOOL(Custom,   LoNPvPEnabled,                          false,   "Legends of Norrath: card-game PvP -- Casual Games (Create / Join a match) and Tournaments. Off = creating, joining and queueing are refused with a line in EQ chat.")
+RULE_INT(Custom,    LoNBonusLootPermillePerLevel,           5,       "Loremaster bonus loot: each booster rolls (Loremaster level x this) per mille for an extra card from the Loremaster loot cards. 5 = live's 0.5% per level. 0 = off.")
+RULE_INT(Custom,    LoNPvPMinSeconds,                       180,     "Legends of Norrath PvP: a game won by the rules (quests, avatar, decking) moves the tournament rating or pays the Journal only if it lasted at least this many seconds (and Custom:LoNMinScenarioTurns turns).")
+RULE_INT(Custom,    LoNRatingStart,                         1500,    "Legends of Norrath PvP: the tournament rating a new player starts with. Casual Games are unrated (as live).")
+RULE_INT(Custom,    LoNRatingK,                             32,      "Legends of Norrath PvP: Elo K factor -- the most the tournament rating moves in one game.")
+RULE_INT(Custom,    LoNRatingPairDailyGames,                3,       "Legends of Norrath PvP: counted games per 24 hours against the SAME opponent, per mode (tournament: rated, casual: Journal); games beyond this still count on the Profile record but move no rating and pay no Journal (anti-farm).")
+RULE_BOOL(Custom,   LoNConcedeLosesRating,                  true,    "Legends of Norrath tournaments: a concede, a disconnect or a missing result report is rated -- the loser loses tournament rating and the winner gains it as for any win (different addresses and the daily limit still apply). Off = they count on the record only. Casual Games are never rated.")
+RULE_INT(Custom,    LoNRankedMinGames,                      5,       "Legends of Norrath leaderboard: rated tournament games a player needs before being listed as ranked (lon_pvp_stats.ranked).")
+RULE_INT(Custom,    LoNRankedMinOpponents,                  3,       "Legends of Norrath leaderboard: different opponents a player needs in rated tournament games before being listed as ranked.")
+RULE_INT(Custom,    LoNTournamentPlayers,                   4,       "Legends of Norrath tournaments: players the open queue waits for; the tournament starts when it fills (single elimination, best of one, free, constructed, no item prizes). 2-16.")
+RULE_STRING(Custom, LoNTournamentTitle,                     "Open", "Legends of Norrath tournaments: the title the queue and the tournament show.")
+RULE_STRING(Custom, LoNTournamentRewardText,                "Journal + ranking", "Legends of Norrath tournaments: the Reward Structure column text. There are no item prizes.")
+RULE_BOOL(Custom,   LoNTournamentOneEntryPerIP,             true,    "Legends of Norrath tournaments: refuse a queue entry from an IP that already has a player in the queue.")
+RULE_INT(Custom,    LoNTournamentNoShowSeconds,             180,     "Legends of Norrath tournaments: how long a round waits for a player still in a game screen, a match room or a trade; after that the player forfeits the pairing.")
+RULE_INT(Custom,    LoNLinkButtons,                         0,       "Legends of Norrath: which navigator menu items work, as a sum: 1 Help, 2 Review EULA, 4 Forums, 8 Leaderboards (and the home screen's View More...), 16 Website. 0 = all five greyed out. Help, Forums, Leaderboards and Website also need their Custom:LoN*Url. Players get it on their next zone-in.")
+RULE_STRING(Custom, LoNHelpUrl,                             "",      "Legends of Norrath: the page the Help menu item opens (http:// or https://, at most 255 characters). Empty = Help stays greyed out. Needs bit 1 in Custom:LoNLinkButtons.")
+RULE_STRING(Custom, LoNForumsUrl,                           "",      "Legends of Norrath: the page the Forums menu item opens (http:// or https://, at most 255 characters). Empty = Forums stays greyed out. Needs bit 4 in Custom:LoNLinkButtons.")
+RULE_STRING(Custom, LoNLeaderboardUrl,                      "",      "Legends of Norrath: the page the Leaderboards menu item and the home screen's View More... open (http:// or https://, at most 255 characters). Empty = greyed out. Needs bit 8 in Custom:LoNLinkButtons.")
+RULE_STRING(Custom, LoNWebsiteUrl,                          "",      "Legends of Norrath: the page the Website menu item opens (http:// or https://, at most 255 characters). Empty = Website stays greyed out. Needs bit 16 in Custom:LoNLinkButtons.")
+RULE_STRING(Custom, LoNMOTD,                                "Welcome to Legends of Norrath! Learn the game in Tutorials, build your decks, trade with other players, and good luck at the table.", "Legends of Norrath: the home screen's Message of the Day, sent at card-game login. Plain text (HTML is shown as text). Empty = the box stays blank.")
 
 RULE_CATEGORY_END()
 

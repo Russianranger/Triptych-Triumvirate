@@ -340,14 +340,14 @@ my %atlas = (
 );
 
 # Global hash of valid stages
-my @STAGES = qw(RoK SoV SoL PoP GoD OoW DoN LDoN DoD PoR TSS TBS SoF SoD FNagafen);
+my @STAGES = qw(RoK SoV SoL PoP GoD OoW DoN LDoN DoD PoR TSS TBS SoF SoD FNagafen UF);
 my %VALID_STAGES = map { $_ => 1 } @STAGES;
 
 # Stages open on NMS (multiclass) servers. Anything not listed here is time-locked
 # regardless of kill flags; unlocking a new expansion is a one-line change here.
 # Stages listed here still require their kill prerequisites (see %STAGE_PREREQUISITES)
 # to be earned per-account before the stage's zones are eligible.
-my %NMS_UNLOCKED_STAGES = map { $_ => 1 } qw(RoK SoV SoL PoP GoD OoW DoN LDoN DoD PoR TSS TBS SoF SoD);
+my %NMS_UNLOCKED_STAGES = map { $_ => 1 } qw(RoK SoV SoL PoP GoD OoW DoN LDoN DoD PoR TSS TBS SoF SoD FNagafen UF);
 
 # Global hash of stage prerequisites
 my %STAGE_PREREQUISITES = (
@@ -359,13 +359,14 @@ my %STAGE_PREREQUISITES = (
     'OoW' => ['Tunat`Muram Cuu Vauax'],   # final boss of Tacvi (GoD); flag NPC is spawned by tacvi/encounters/tmcv.lua
     'DoN' => ['Xegony', 'Fennin Ro the Tyrant of Fire', 'Coirnav the Avatar of Water', 'Rathe Council', 'Agnarr the Storm Lord'],
     'DoD' => ['Tunat`Muram Cuu Vauax', 'Warlord Imal Ojun'],   # Depths of Darkhollow unlocks on the GoD end boss (same kill that opens OoW) + the LDoN Rujarkian Hills raid warlord
-    'PoR' => ['Master of Hate', 'Master of Weaponry', 'Master of Foresight', 'Master of Specialization', 'Master of Adaptation', 'Master of Destruction', 'Anguish', 'Vishimtar the Fallen'],   # all six MPG chamber Masters + Anguish (OMM) + the DoN Nest raid dragon
+    'PoR' => ['Master of Hate', 'Master of Weaponry', 'Master of Foresight', 'Master of Specialization', 'Master of Adaptation', 'Master of Destruction', 'Anguish', 'Vishimtar the Fallen', 'Mayong Mistmoore Dreadspire'],   # all six MPG chamber Masters + Anguish (OMM) + the DoN Nest raid dragon + Demi-Plane Mayong (DoDH endboss)
     'TSS' => ['Deathknell'],              # Deathknell, Tower of Dissonance clear
     'TBS' => ['Dyn`Leth'],                # Ashengate Dyn'Leth raid
     'SoF' => ['Solusek Ro', 'Mayong Mistmoore'],   # the two gods in Solteris (TBS-era raid)
     'LDoN' => ['Xegony', 'Fennin Ro the Tyrant of Fire', 'Coirnav the Avatar of Water', 'Rathe Council', 'Agnarr the Storm Lord'],   # opens alongside DoN (same PoP elemental gods)
     'SoD' => ['Kerafyrm', 'Kerafyrm-Crystallos'],   # the Sleeper in both Sleeper's Tomb and Crystallos
     'FNagafen' => ['Quarm'],
+    'UF' => ['The First Creation'],   # Convorteum seven-ward finale (Rasper miscRaidProg)
     # ... and so on for each stage
 );
 
@@ -395,6 +396,7 @@ my %STAGE_DESCRIPTIONS = (
     'SoF' => "Secrets of Faydwer",
     'SoD' => "Seeds of Destruction",
     'FNagafen' => "Fabled Nagafen's Lair",
+    'UF' => "Underfoot",
 );
 
 # Convert to a direct lookup hash
@@ -935,9 +937,16 @@ sub GrantDrakkinBreathWeapon {
         return;
     }
 
-    if ($ranks > 0) {
-        $client->GrantAlternateAdvancementAbility($aa_id, $ranks, 1);
-    }
+    # Ranks 1-13 are now earned by quest: the shared "Strengthening the Blood"
+    # tasks 600500-600512, offered by each drakkin's own ancestor in Crescent
+    # Reach at level 5*N while the character holds rank N-1. The ancestor grants
+    # the rank on the reward hail (see Release-NMS-Quests/crescent/#*_the_*.pl).
+    # Keep the auto-grant disabled so the quest ladder is the real path; if you
+    # want the old auto-grant back, restore the call below.
+    #
+    # if ($ranks > 0) {
+    #     $client->GrantAlternateAdvancementAbility($aa_id, $ranks, 1);
+    # }
 }
 
 sub ConvertFlags {
@@ -1159,6 +1168,7 @@ my %MEMORY_CAPSTONES = (
     'xerkizh the creator'          => 'Xerkizh the Creator',
     'emperor ssraeshza'            => 'Emperor Ssraeshza',
     'emperorssraeshza'             => 'Emperor Ssraeshza',
+    'saryrn'                       => 'Saryrn',
     'tunat`muram cuu vauax'        => 'Tunat`Muram Cuu Vauax',
     'anguish'                      => 'Overlord Mata Muram',
     'xegony'                       => 'Xegony',
@@ -1175,6 +1185,7 @@ my %MEMORY_CAPSTONES = (
     'mayong mistmoore'             => 'Mayong Mistmoore',
     'kerafyrm'                     => 'Kerafyrm the Sleeper',
     'kerafyrm-crystallos'          => 'Kerafyrm of Crystallos',
+    'quarm'                        => 'Quarm',
 );
 
 # Resolves the guild id of the player credited with a death for first-kill

@@ -4,6 +4,7 @@
 
 #include "../common/global_define.h"
 #include "embperl.h"
+#include "achievement_state_updates.h"
 #include "client.h"
 #include "dynamic_zone.h"
 #include "titles.h"
@@ -1567,6 +1568,120 @@ bool Perl_Client_IsTaskActivityActive(Client* self, int task_id, int activity_id
 	return self->IsTaskActivityActive(task_id, activity_id);
 }
 
+bool Perl_Client_HasCompletedAchievement(Client* self, uint32 achievement_id) // @categories Achievements
+{
+	return self->HasCompletedAchievement(achievement_id);
+}
+
+int Perl_Client_GetAchievementStatus(Client* self, uint32 achievement_id) // @categories Achievements
+{
+	return self->GetAchievementStatus(achievement_id);
+}
+
+int64_t Perl_Client_GetAchievementProgress(
+	Client* self,
+	uint32 achievement_id,
+	uint32 component_type,
+	uint32 component_id
+) // @categories Achievements
+{
+	if (component_type > 2) {
+		return -1;
+	}
+	return self->GetAchievementProgress(
+		achievement_id,
+		static_cast<uint8>(component_type),
+		component_id
+	);
+}
+
+bool Perl_Client_SetAchievementProgress(
+	Client* self,
+	uint32 achievement_id,
+	uint32 component_type,
+	uint32 component_id,
+	uint32 value
+) // @categories Achievements
+{
+	if (component_type > 2) {
+		return false;
+	}
+	return self->SetAchievementProgress(
+		achievement_id,
+		static_cast<uint8>(component_type),
+		component_id,
+		value
+	);
+}
+
+bool Perl_Client_SetAchievementProgress(
+	Client* self,
+	uint32 achievement_id,
+	uint32 component_type,
+	uint32 component_id,
+	uint32 value,
+	bool additive
+) // @categories Achievements
+{
+	if (component_type > 2) {
+		return false;
+	}
+	return self->SetAchievementProgress(
+		achievement_id,
+		static_cast<uint8>(component_type),
+		component_id,
+		value,
+		additive
+	);
+}
+
+bool Perl_Client_CompleteAchievement(Client* self, uint32 achievement_id) // @categories Achievements
+{
+	return self->CompleteAchievement(achievement_id);
+}
+
+bool Perl_Client_AdvanceSharedTaskAchievementProgress(
+	Client* self,
+	uint32 achievement_id,
+	uint32 component_type,
+	uint32 component_id,
+	uint32 value
+) // @categories Achievements, Tasks and Activities
+{
+	if (component_type > 2) {
+		return false;
+	}
+
+	const auto shared_task_id = self->GetSharedTaskId();
+	if (shared_task_id <= 0) {
+		return false;
+	}
+
+	return AchievementStateUpdates::QueueSharedTaskAdvance(
+		shared_task_id,
+		achievement_id,
+		static_cast<AchievementStateUpdates::ComponentType>(component_type),
+		component_id,
+		value
+	);
+}
+
+bool Perl_Client_CompleteSharedTaskAchievement(
+	Client* self,
+	uint32 achievement_id
+) // @categories Achievements, Tasks and Activities
+{
+	const auto shared_task_id = self->GetSharedTaskId();
+	if (shared_task_id <= 0) {
+		return false;
+	}
+
+	return AchievementStateUpdates::QueueSharedTaskCompletion(
+		shared_task_id,
+		achievement_id
+	);
+}
+
 void Perl_Client_LockSharedTask(Client* self, bool lock)
 {
 	return self->LockSharedTask(lock);
@@ -1665,6 +1780,27 @@ void Perl_Client_OpenShroudWindow(Client* self, Mob* npc) // @categories Script 
 void Perl_Client_RemoveShroud(Client* self) // @categories Script Utility
 {
 	self->RemoveShroud();
+}
+
+// NMS: script-side shroud apply (Cake Defense monster mission). Scripts must
+// call it only after the client has settled into the zone.
+void Perl_Client_ApplyShroud(Client* self, uint32 shroud_id) // @categories Script Utility
+{
+	self->ApplyShroud(shroud_id);
+}
+
+// NMS: unshroud without sending the OP_Shroud/illusion packets -- for zone-in
+// hooks where the client is still building the zone and the fresh spawn data
+// already carries the real form.
+void Perl_Client_RemoveShroudSilent(Client* self) // @categories Script Utility
+{
+	self->RemoveShroud(false);
+}
+
+// NMS: instance version of the zone this client is in (Cake Defense v202 gating).
+uint32 Perl_Client_GetZoneInstanceVersion(Client* self) // @categories Script Utility
+{
+	return zone ? zone->GetInstanceVersion() : 0;
 }
 
 void Perl_Client_NotifyNewTitlesAvailable(Client* self) // @categories Account and Character
@@ -3583,7 +3719,12 @@ bool Perl_Client_KeyRingClear(Client* self)
 
 void Perl_Client_KeyRingList(Client* self)
 {
-	self->KeyRingList();
+	self->KeyRingList(self);
+}
+
+void Perl_Client_KeyRingList(Client* self, Client* c)
+{
+	self->KeyRingList(c);
 }
 
 bool Perl_Client_KeyRingRemove(Client* self, uint32 item_id)
@@ -3647,6 +3788,7 @@ void perl_register_client()
 	package.add("AddRadiantCrystals", &Perl_Client_AddRadiantCrystals);
 	package.add("AddSkill", &Perl_Client_AddSkill);
 	package.add("Admin", &Perl_Client_Admin);
+	package.add("AdvanceSharedTaskAchievementProgress", &Perl_Client_AdvanceSharedTaskAchievementProgress);
 	package.add("ApplySpell", (void(*)(Client*, int))&Perl_Client_ApplySpell);
 	package.add("ApplySpell", (void(*)(Client*, int, int))&Perl_Client_ApplySpell);
 	package.add("ApplySpell", (void(*)(Client*, int, int, int))&Perl_Client_ApplySpell);
@@ -3664,6 +3806,7 @@ void perl_register_client()
 	package.add("ApplySpellRaid", (void(*)(Client*, int, int, int, bool, bool))&Perl_Client_ApplySpellRaid);
 	package.add("ApplySpellRaid", (void(*)(Client*, int, int, int, bool, bool, bool))&Perl_Client_ApplySpellRaid);
 	package.add("AreTasksCompleted", (bool(*)(Client*, perl::array))&Perl_Client_AreTasksCompleted);
+	package.add("ApplyShroud", (void(*)(Client*, uint32))&Perl_Client_ApplyShroud);
 	package.add("AreaTaunt", (void(*)(Client*))&Perl_Client_AreaTaunt);
 	package.add("AreaTaunt", (void(*)(Client*, float))&Perl_Client_AreaTaunt);
 	package.add("AreaTaunt", (void(*)(Client*, float, int))&Perl_Client_AreaTaunt);
@@ -3698,6 +3841,8 @@ void perl_register_client()
 	package.add("ClearPEQZoneFlag", &Perl_Client_ClearPEQZoneFlag);
 	package.add("ClearXTargets", &Perl_Client_ClearXTargets);
 	package.add("ClearZoneFlag", &Perl_Client_ClearZoneFlag);
+	package.add("CompleteAchievement", &Perl_Client_CompleteAchievement);
+	package.add("CompleteSharedTaskAchievement", &Perl_Client_CompleteSharedTaskAchievement);
 	package.add("CompleteTask", &Perl_Client_CompleteTask);
 	package.add("Connected", &Perl_Client_Connected);
 	package.add("ConsumeItemOnCursor", &Perl_Client_ConsumeItemOnCursor);
@@ -3755,6 +3900,8 @@ void perl_register_client()
 	package.add("GetGetAccountBucketRemaining", &Perl_Client_GetAccountBucketRemaining);
 	package.add("GetAccountFlag", &Perl_Client_GetAccountFlag);
 	package.add("GetAccountFlags", &Perl_Client_GetAccountFlags);
+	package.add("GetAchievementProgress", &Perl_Client_GetAchievementProgress);
+	package.add("GetAchievementStatus", &Perl_Client_GetAchievementStatus);
 	package.add("GetAggroCount", &Perl_Client_GetAggroCount);
 	package.add("GetAllMoney", &Perl_Client_GetAllMoney);
 	package.add("GetAlternateCurrencyValue", &Perl_Client_GetAlternateCurrencyValue);
@@ -3908,6 +4055,7 @@ void perl_register_client()
 	package.add("GetWeight", &Perl_Client_GetWeight);
 	package.add("GetPEQZoneFlags", &Perl_Client_GetPEQZoneFlags);
 	package.add("GetZoneFlags", &Perl_Client_GetZoneFlags);
+	package.add("GetZoneInstanceVersion", (uint32(*)(Client*))&Perl_Client_GetZoneInstanceVersion);
 	package.add("GoFish", &Perl_Client_GoFish);
 	package.add("GrantAllAAPoints", (void(*)(Client*))&Perl_Client_GrantAllAAPoints);
 	package.add("GrantAllAAPoints", (void(*)(Client*, uint8))&Perl_Client_GrantAllAAPoints);
@@ -3918,6 +4066,7 @@ void perl_register_client()
 	package.add("GuildID", &Perl_Client_GuildID);
 	package.add("GuildRank", &Perl_Client_GuildRank);
 	package.add("HasAugmentEquippedByID", &Perl_Client_HasAugmentEquippedByID);
+	package.add("HasCompletedAchievement", &Perl_Client_HasCompletedAchievement);
 	package.add("HasDisciplineLearned", &Perl_Client_HasDisciplineLearned);
 	package.add("HasExpeditionLockout", &Perl_Client_HasExpeditionLockout);
 	package.add("HasItemEquippedByID", &Perl_Client_HasItemEquippedByID);
@@ -3955,7 +4104,8 @@ void perl_register_client()
 	package.add("KeyRingAdd", &Perl_Client_KeyRingAdd);
 	package.add("KeyRingCheck", &Perl_Client_KeyRingCheck);
 	package.add("KeyRingClear", &Perl_Client_KeyRingClear);
-	package.add("KeyRingList", &Perl_Client_KeyRingList);
+	package.add("KeyRingList", (void(*)(Client*))&Perl_Client_KeyRingList);
+	package.add("KeyRingList", (void(*)(Client*, Client*))&Perl_Client_KeyRingList);
 	package.add("KeyRingRemove", &Perl_Client_KeyRingRemove);
 	package.add("Kick", &Perl_Client_Kick);
 	package.add("LearnDisciplines", &Perl_Client_LearnDisciplines);
@@ -4006,6 +4156,7 @@ void perl_register_client()
 	package.add("OpenLFGuildWindow", &Perl_Client_OpenLFGuildWindow);
 	package.add("OpenShroudWindow", &Perl_Client_OpenShroudWindow);
 	package.add("RemoveShroud", &Perl_Client_RemoveShroud);
+	package.add("RemoveShroudSilent", (void(*)(Client*))&Perl_Client_RemoveShroudSilent);
 	package.add("PlayMP3", &Perl_Client_PlayMP3);
 	package.add("Popup2", (void(*)(Client*, const char*, const char*))&Perl_Client_Popup2);
 	package.add("Popup2", (void(*)(Client*, const char*, const char*, uint32))&Perl_Client_Popup2);
@@ -4086,6 +4237,8 @@ void perl_register_client()
 	package.add("SetAccountBucket", (void(*)(Client*, std::string, std::string))&Perl_Client_SetAccountBucket);
 	package.add("SetAccountBucket", (void(*)(Client*, std::string, std::string, std::string))&Perl_Client_SetAccountBucket);
 	package.add("SetAlternateCurrencyValue", &Perl_Client_SetAlternateCurrencyValue);
+	package.add("SetAchievementProgress", (bool(*)(Client*, uint32, uint32, uint32, uint32))&Perl_Client_SetAchievementProgress);
+	package.add("SetAchievementProgress", (bool(*)(Client*, uint32, uint32, uint32, uint32, bool))&Perl_Client_SetAchievementProgress);
 	package.add("SetAnon", &Perl_Client_SetAnon);
 	package.add("SetAutoLoginCharacterName", (bool(*)(Client*))&Perl_Client_SetAutoLoginCharacterName);
 	package.add("SetAutoLoginCharacterName", (bool(*)(Client*, std::string))&Perl_Client_SetAutoLoginCharacterName);
