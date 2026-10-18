@@ -6,6 +6,16 @@
 -- recruiters) can enforce the per-account expansion gates with one require().
 
 local PREREQ = {
+    -- Classic -> Planes of Power (same objective lists as %STAGE_PREREQUISITES)
+    RoK = { "lord nagafen", "lady vox" },
+    SoV = { "trakanon", "gorenaire", "severilous", "talendor" },
+    SoL = { "klandicar", "zlandicar", "wuoshi", "dozekar the cursed", "kelorek`dar" },
+    PoP = { "thought horror overfiend", "the insanity crawler", "grieg veneficus", "xerkizh the creator", "emperor ssraeshza" },
+    -- Gates of Discord: Saryrn is the single objective (same as %STAGE_PREREQUISITES{'GoD'})
+    GoD = { "saryrn" },
+    -- Omens of War: Tunat`Muram Cuu Vauax (Tacvi end boss; same single objective
+    -- as %STAGE_PREREQUISITES{'OoW'} in plugins/NMS_progression_utils.pl)
+    OoW = { "tunat`muram cuu vauax" },
     -- Dragons of Norrath / LDoN unlock: all five PoP elemental gods
     DoN = {
         "xegony",
@@ -14,9 +24,20 @@ local PREREQ = {
         "rathe council",
         "agnarr the storm lord",
     },
-    -- Depths of Darkhollow: LDoN Warlord Imal Ojun + DoN Vishimtar the Fallen
-    DoD = { "warlord imal ojun", "vishimtar the fallen" },
-    -- Prophecy of Ro: six MPG chamber Masters + Anguish + Demi-Plane Mayong
+    -- Lost Dungeons of Norrath: opens alongside DoN on the same five elemental gods
+    LDoN = {
+        "xegony",
+        "fennin ro the tyrant of fire",
+        "coirnav the avatar of water",
+        "rathe council",
+        "agnarr the storm lord",
+    },
+    -- Depths of Darkhollow: GoD end boss (same kill that opens OoW) +
+    -- the LDoN Rujarkian Hills raid warlord (mirrors %STAGE_PREREQUISITES{'DoD'})
+    DoD = { "tunat`muram cuu vauax", "warlord imal ojun" },
+    -- Prophecy of Ro: six MPG chamber Masters + Anguish + the DoN Nest raid
+    -- dragon + Demi-Plane Mayong (Dreadspire; distinct from the Solteris
+    -- Mayong used by SoF)
     PoR = {
         "master of hate",
         "master of weaponry",
@@ -25,6 +46,7 @@ local PREREQ = {
         "master of adaptation",
         "master of destruction",
         "anguish",
+        "vishimtar the fallen",
         "mayong mistmoore dreadspire",
     },
     -- The Serpent's Spine: Deathknell (Ayonae Ro) clear
@@ -35,6 +57,10 @@ local PREREQ = {
     SoF = { "mayong mistmoore", "solusek ro" },
     -- Seeds of Destruction: Crystallos Kerafyrm + Sleeper's Tomb 2.0 Kerafyrm
     SoD = { "kerafyrm", "kerafyrm-crystallos" },
+    -- Fabled Nagafen's Lair: Quarm (Plane of Time, phase 6)
+    FNagafen = { "quarm" },
+    -- Underfoot: the Convorteum finale (seven-ward raid line, Rasper miscRaidProg)
+    UF = { "the first creation" },
 }
 
 local M = {}

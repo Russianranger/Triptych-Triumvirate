@@ -319,16 +319,19 @@ bool SharedDatabase::SaveCursor(
 	std::list<EQ::ItemInstance*>::const_iterator& end
 )
 {
-	const int deleted = InventoryRepository::DeleteWhere(
+	if (!InventoryRepository::TryDeleteWhere(
 		*this,
 		fmt::format(
-			"`character_id` = {} AND (`slot_id` = {} OR `slot_id` BETWEEN {} AND {})",
+			"`character_id` = {} AND "
+			"(`slot_id` = {} OR `slot_id` BETWEEN {} AND {})",
 			char_id,
 			EQ::invslot::slotCursor,
 			EQ::invbag::CURSOR_BAG_BEGIN,
 			EQ::invbag::CURSOR_BAG_END
 		)
-	);
+	)) {
+		return false;
+	}
 
 	int16 i = EQ::invbag::CURSOR_BAG_BEGIN;
 	for (auto& it = start; it != end; ++it, i++) {
@@ -344,7 +347,13 @@ bool SharedDatabase::SaveCursor(
 		}
 	}
 
-	return true;
+	// The cursor queue has only CURSOR_BAG_COUNT durable positions. Do not
+	// report success after silently omitting overflow entries.
+	const auto complete = start == end;
+	if (!complete) {
+		TransactionFailStrict();
+	}
+	return complete;
 }
 
 bool SharedDatabase::VerifyInventory(uint32 account_id, int16 slot_id, const EQ::ItemInstance* inst)
@@ -392,8 +401,11 @@ bool SharedDatabase::SaveInventory(uint32 char_id, const EQ::ItemInstance* inst,
 		} else {
 			// Needed to clear out bag slots that 'REPLACE' in UpdateSharedBankSlot does not overwrite..otherwise, duplication occurs
 			// (This requires that parent then child items be sent..which should be how they are currently passed)
-			if (EQ::InventoryProfile::SupportsContainers(slot_id)) {
-				DeleteSharedBankSlot(char_id, slot_id);
+			if (
+				EQ::InventoryProfile::SupportsContainers(slot_id) &&
+				!DeleteSharedBankSlot(char_id, slot_id)
+			) {
+				return false;
 			}
 
 			return UpdateSharedBankSlot(char_id, inst, slot_id);
@@ -404,8 +416,11 @@ bool SharedDatabase::SaveInventory(uint32 char_id, const EQ::ItemInstance* inst,
 
 	// Needed to clear out bag slots that 'REPLACE' in UpdateInventorySlot does not overwrite..otherwise, duplication occurs
 	// (This requires that parent then child items be sent..which should be how they are currently passed)
-	if (EQ::InventoryProfile::SupportsContainers(slot_id)) {
-		DeleteInventorySlot(char_id, slot_id);
+	if (
+		EQ::InventoryProfile::SupportsContainers(slot_id) &&
+		!DeleteInventorySlot(char_id, slot_id)
+	) {
+		return false;
 	}
 
 	return UpdateInventorySlot(char_id, inst, slot_id);
@@ -457,7 +472,16 @@ bool SharedDatabase::UpdateInventorySlot(uint32 char_id, const EQ::ItemInstance*
 			i++
 		) {
 			const EQ::ItemInstance* bag_inst = inst->GetItem(i);
-			SaveInventory(char_id, bag_inst, EQ::InventoryProfile::CalcSlotId(slot_id, i));
+			if (
+				bag_inst &&
+				!SaveInventory(
+					char_id,
+					bag_inst,
+					EQ::InventoryProfile::CalcSlotId(slot_id, i)
+				)
+			) {
+				return false;
+			}
 		}
 	}
 
@@ -511,7 +535,16 @@ bool SharedDatabase::UpdateSharedBankSlot(uint32 char_id, const EQ::ItemInstance
 			i++
 		) {
 			const EQ::ItemInstance* bag_inst = inst->GetItem(i);
-			SaveInventory(char_id, bag_inst, EQ::InventoryProfile::CalcSlotId(slot_id, i));
+			if (
+				bag_inst &&
+				!SaveInventory(
+					char_id,
+					bag_inst,
+					EQ::InventoryProfile::CalcSlotId(slot_id, i)
+				)
+			) {
+				return false;
+			}
 		}
 	}
 
@@ -520,31 +553,25 @@ bool SharedDatabase::UpdateSharedBankSlot(uint32 char_id, const EQ::ItemInstance
 
 bool SharedDatabase::DeleteInventorySlot(uint32 char_id, int16 slot_id)
 {
-	const int deleted = InventoryRepository::DeleteWhere(
-		*this,
-		fmt::format(
-			"`character_id` = {} AND `slot_id` = {}",
-			char_id,
-			slot_id
-		)
-	);
-
-	if (!deleted) {
-		return false;
-	}
-
-	// Delete bag slots, if need be
 	if (!EQ::InventoryProfile::SupportsContainers(slot_id)) {
-		return true;
+		return InventoryRepository::TryDeleteWhere(
+			*this,
+			fmt::format(
+				"`character_id` = {} AND `slot_id` = {}",
+				char_id,
+				slot_id
+			)
+		);
 	}
 
 	const int16 base_slot_id = EQ::InventoryProfile::CalcSlotId(slot_id, EQ::invbag::SLOT_BEGIN);
-
-	return InventoryRepository::DeleteWhere(
+	return InventoryRepository::TryDeleteWhere(
 		*this,
 		fmt::format(
-			"`character_id` = {} AND `slot_id` BETWEEN {} AND {}",
+			"`character_id` = {} AND "
+			"(`slot_id` = {} OR `slot_id` BETWEEN {} AND {})",
 			char_id,
+			slot_id,
 			base_slot_id,
 			base_slot_id + (EQ::invbag::SLOT_COUNT - 1)
 		)
@@ -555,30 +582,25 @@ bool SharedDatabase::DeleteSharedBankSlot(uint32 char_id, int16 slot_id)
 {
 	const uint32 account_id = GetAccountIDByChar(char_id);
 
-	const int deleted = SharedbankRepository::DeleteWhere(
-		*this,
-		fmt::format(
-			"`account_id` = {} AND `slot_id` = {}",
-			account_id,
-			slot_id
-		)
-	);
-
-	if (!deleted) {
-		return false;
-	}
-
 	if (!EQ::InventoryProfile::SupportsContainers(slot_id)) {
-		return true;
+		return SharedbankRepository::TryDeleteWhere(
+			*this,
+			fmt::format(
+				"`account_id` = {} AND `slot_id` = {}",
+				account_id,
+				slot_id
+			)
+		);
 	}
 
 	const int16 base_slot_id = EQ::InventoryProfile::CalcSlotId(slot_id, EQ::invbag::SLOT_BEGIN);
-
-	return SharedbankRepository::DeleteWhere(
+	return SharedbankRepository::TryDeleteWhere(
 		*this,
 		fmt::format(
-			"`account_id` = {} AND `slot_id` BETWEEN {} AND {}",
+			"`account_id` = {} AND "
+			"(`slot_id` = {} OR `slot_id` BETWEEN {} AND {})",
 			account_id,
+			slot_id,
 			base_slot_id,
 			base_slot_id + (EQ::invbag::SLOT_COUNT - 1)
 		)
@@ -1326,6 +1348,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 		item.Haste = Strings::ToInt(row[ItemField::haste]);
 		item.HealAmt = Strings::ToInt(row[ItemField::healamt]);
 		item.Purity = Strings::ToUnsignedInt(row[ItemField::purity]);
+		item.PowerSourceCapacity = Strings::ToUnsignedInt(row[ItemField::powersourcecapacity]);
 		item.Shielding = static_cast<int8>(EQ::Clamp(Strings::ToInt(row[ItemField::shielding]), -128, 127));
 		item.SpellDmg = Strings::ToInt(row[ItemField::spelldmg]);
 		item.SpellShield = static_cast<int8>(EQ::Clamp(Strings::ToInt(row[ItemField::spellshield]), -128, 127));
@@ -1553,7 +1576,12 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 	for (uint32 id = 0; id < hash.max_key(); ++id) {
 		if (hash.exists(id) && !hash.exists(id + 1000000)) {
 			auto item = hash.find(id);
-			item->Slots &= ~2097152;
+			// Power Source items (Energeian orbs) keep their power source slot
+			// even without an Enchanted/Legendary tier; they are batteries, not
+			// tiered upgrade items.
+			if (item->PowerSourceCapacity == 0) {
+				item->Slots &= ~2097152;
+			}
 		}
     }
 }
@@ -1976,6 +2004,17 @@ void SharedDatabase::LoadSpells(void *data, int max_spells) {
 	*static_cast<uint32*>(data) = max_spells;
 	SPDat_Spell_Struct *sp = reinterpret_cast<SPDat_Spell_Struct*>(static_cast<char*>(data) + sizeof(uint32));
 
+	// A SQL NULL reaches this loader as a null pointer, and the string/number
+	// helpers take std::string -- so a NULL column becomes std::string(nullptr),
+	// i.e. strlen(nullptr). That is exactly how shared_memory.exe used to die
+	// (EXCEPTION_ACCESS_VIOLATION in strlen) loading a custom spell whose
+	// typedescnum/effectdescnum were NULL: the crash is in the numeric parse, not
+	// in the copies below, so the real fix is the data. `shroudref/null_columns.py`
+	// reports NULLs per column for any table; run it after editing spells.
+	auto field = [](const char *value) -> const char * {
+		return value ? value : "";
+	};
+
 	const std::string query = "SELECT * FROM spells_new ORDER BY id ASC";
     auto results = QueryDatabase(query);
     if (!results.Success()) {
@@ -1998,14 +2037,14 @@ void SharedDatabase::LoadSpells(void *data, int max_spells) {
 
         ++counter;
         sp[tempid].id = tempid;
-        strn0cpy(sp[tempid].name, row[1], sizeof(sp[tempid].name));
-        strn0cpy(sp[tempid].player_1, row[2], sizeof(sp[tempid].player_1));
-		strn0cpy(sp[tempid].teleport_zone, row[3], sizeof(sp[tempid].teleport_zone));
-		strn0cpy(sp[tempid].you_cast, row[4], sizeof(sp[tempid].you_cast));
-		strn0cpy(sp[tempid].other_casts, row[5], sizeof(sp[tempid].other_casts));
-		strn0cpy(sp[tempid].cast_on_you, row[6], sizeof(sp[tempid].cast_on_you));
-		strn0cpy(sp[tempid].cast_on_other, row[7], sizeof(sp[tempid].cast_on_other));
-		strn0cpy(sp[tempid].spell_fades, row[8], sizeof(sp[tempid].spell_fades));
+        strn0cpy(sp[tempid].name, field(row[1]), sizeof(sp[tempid].name));
+        strn0cpy(sp[tempid].player_1, field(row[2]), sizeof(sp[tempid].player_1));
+		strn0cpy(sp[tempid].teleport_zone, field(row[3]), sizeof(sp[tempid].teleport_zone));
+		strn0cpy(sp[tempid].you_cast, field(row[4]), sizeof(sp[tempid].you_cast));
+		strn0cpy(sp[tempid].other_casts, field(row[5]), sizeof(sp[tempid].other_casts));
+		strn0cpy(sp[tempid].cast_on_you, field(row[6]), sizeof(sp[tempid].cast_on_you));
+		strn0cpy(sp[tempid].cast_on_other, field(row[7]), sizeof(sp[tempid].cast_on_other));
+		strn0cpy(sp[tempid].spell_fades, field(row[8]), sizeof(sp[tempid].spell_fades));
 
 		sp[tempid].range = Strings::ToFloat(row[9]);
 		sp[tempid].aoe_range = Strings::ToFloat(row[10]);

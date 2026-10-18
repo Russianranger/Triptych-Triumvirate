@@ -952,7 +952,7 @@ static const uint32 MAX_PP_LANGUAGE = 28;
 
 static const uint32 MAX_PP_SKILL		= PACKET_SKILL_ARRAY_SIZE;	// 100 - actual skills buffer size
 static const uint32 MAX_PP_INNATE_SKILL	= 25;
-static const uint32 MAX_PP_AA_ARRAY		= 240;
+static const uint32 MAX_PP_AA_ARRAY		= 300;
 static const uint32 MAX_GROUP_MEMBERS	= 6;
 static const uint32 MAX_RECAST_TYPES	= 20;
 
@@ -1602,6 +1602,29 @@ struct WaypointRequest_Struct
     bool    autoconfirm_selected;
 };
 
+// Server -> client (OP_NMSLoNSession): the Legends of Norrath card game's one-time login
+// token and where the DLL relays the card game to (world's card service, Custom:LoNPort).
+// The DLL hands the token to the card game as --sessionID= and relays its 127.0.0.1:15782.
+struct NMSLoNSession_Struct {
+	char   token[36];      // NUL-terminated, 32 hex characters
+	char   host[128];      // NUL-terminated host or IP
+	uint32 port;           // Custom:LoNPort
+	uint32 link_buttons;   // Custom:LoNLinkButtons: NMS_LONLINK_* bits, set = ON (was 'reserved', always 0)
+};
+static_assert(sizeof(NMSLoNSession_Struct) == 172, "NMSLoNSession_Struct is read by the client DLL -- keep it 172 bytes");
+// The card game's navigator menu items (research/lon_home_screen_and_links.md 1). Off = greyed.
+#define NMS_LONLINK_HELP     1u
+#define NMS_LONLINK_EULA     2u
+#define NMS_LONLINK_FORUMS   4u
+#define NMS_LONLINK_BOARDS   8u    // Leaderboards (and the home screen's View More...)
+#define NMS_LONLINK_WEBSITE 16u
+#define NMS_LONLINK_ALL     31u
+// v2 tail, right after the 172 bytes (DLLs that predate it read only the head: they accept size >= 172):
+// uint32 NMS_LONLINK_MAGIC, then the help, forums, leaderboards and website addresses in that order,
+// each a uint16 length + that many bytes, no NUL, each at most NMS_LONLINK_URL_MAX.
+#define NMS_LONLINK_MAGIC    0x55534D4Eu   // 'NMSU'
+#define NMS_LONLINK_URL_MAX  255
+
 /*
 ** Consider Struct
 */
@@ -2171,6 +2194,7 @@ enum GuildInformationActions
 {
     GuildUpdateURL          = 0,
     GuildUpdateChannel      = 1,
+    GuildUpdateAchievement  = 3,
     GuildUpdateRanks        = 4,
     GuildUpdatePermissions  = 5
 };
@@ -5359,6 +5383,11 @@ struct AARankInfo_Struct
 	int32 category;
 	uint32 charges;
 	uint8 grant_only;
+	// NMS: 1 when the server decided this row belongs to the *current* shroud
+	// form/level (see Client::IsShroudAbilityForCurrentForm). The RoF2 encoder
+	// writes it as the client's per-row shroud byte, which the AA window's
+	// monster-mode gate requires.
+	uint8 shroud_row;
 	uint32 total_effects;
 	uint32 total_prereqs;
 };
@@ -5541,10 +5570,23 @@ struct spawnShroudOther
 
 // Internal packet used to hand a player's shrouded form to the RoF2 OP_Shroud
 // encoder: the updated spawn plus the profile block the client applies.
+// The trailing fields are NMS extensions consumed by BuildShroudProfileBlock
+// (they never touch the wire directly): the Custom:ShroudLiveMode rule bits
+// and the live-like monster-point / shroud-AA overrides for the profile block.
 struct ShroudSelf_Struct
 {
 	Spawn_Struct         spawn;
 	PlayerProfile_Struct profile;
+
+	// NMS live-like shroud extensions (not part of the wire layout).
+	uint32 live_mode            = 0; // Custom:ShroudLiveMode rule bits
+	uint32 monster_points       = 0; // unspent monster points
+	uint32 monster_points_spent = 0; // spent monster points this session
+	static constexpr uint32 kMaxShroudAAs = 48;
+	uint32 shroud_aa_count      = 0;
+	uint32 shroud_aa_ids[48]    = {};   // ability first_rank_id
+	uint32 shroud_aa_values[48] = {};   // owned rank (points spent)
+	uint32 shroud_aa_spells[48] = {};   // rank spell (scribed into the form's spellbook)
 };
 
 /**
@@ -5578,15 +5620,14 @@ struct ShroudUpdateSelectWindow
  * Client request to become (or stop being) a shroud.
  *
  * OpCode: OP_ShroudSelect (and OP_ShroudSelectCancel uses op only)
- * RE-VERIFIED against the RoF2 client binary: the client sends a 6-byte
- * buffer (u16 opcode + u32 value) through its send helper at
- * eqgame+0x413830, so the server-side body is a single uint32 shroud id
- * (0 = remove).
+ * NOTE: the RoF2 payload is not documented by any working server; the layout
+ * below is the working hypothesis and is validated/parsed defensively.
  */
 struct ShroudSelect_Struct
 {
 /*000*/ uint32 shroud_id;   // shroud template id, 0 to cancel
-/*004*/
+/*004*/ uint32 op;         // 0/absent = select, 1 = cancel (unverified)
+/*008*/
 };
 
 struct ApplyPoison_Struct {
